@@ -498,13 +498,13 @@
 
                 this.cancellationTokenSource?.Dispose();
                 this.fontUpdates?.Clear();
-                this.swapChain?.Release();
-                this.backBuffer?.Release();
-                this.renderView?.Release();
+                this.swapChain?.Dispose();
+                this.backBuffer?.Dispose();
+                this.renderView?.Dispose();
                 this.renderer?.Dispose();
                 this.window?.Dispose();
-                this.deviceContext?.Release();
-                this.device?.Release();
+                this.deviceContext?.Dispose();
+                this.device?.Dispose();
             }
 
             if (this.selfPointer != IntPtr.Zero)

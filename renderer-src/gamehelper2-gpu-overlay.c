@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,8 +66,8 @@ static int poe_geometry(Display *d, int screen, int *x, int *y, int *width, int 
 /* TCP may split one ImGui frame across reads.  Once its four-byte length has
  * arrived, wait for the rest rather than discarding a partial payload; the
  * managed side writes every payload atomically to this local connection. */
-static int read_exact(int fd, void *out, size_t bytes) { unsigned char *p=out;unsigned idle=0;while(bytes) { ssize_t n=recv(fd,p,bytes,0); if(n>0){p+=n;bytes-=(size_t)n;idle=0;continue;} if(n==0)return 0; if(errno==EINTR)continue; if((errno==EAGAIN||errno==EWOULDBLOCK)&&++idle<4)continue; return -1;} return 1; }
-static int write_exact(int fd, const void *data, size_t bytes) { const unsigned char *p=data;unsigned idle=0;while(bytes) { ssize_t n=send(fd,p,bytes,0); if(n>0){p+=n;bytes-=(size_t)n;idle=0;continue;} if(n<0&&errno==EINTR)continue; if(n<0&&(errno==EAGAIN||errno==EWOULDBLOCK)&&++idle<4)continue; return 0;} return 1; }
+static int read_exact(int fd, void *out, size_t bytes) { unsigned char *p=out;while(bytes) { ssize_t n=recv(fd,p,bytes,0); if(n>0){p+=n;bytes-=(size_t)n;continue;} if(n==0)return 0; if(errno==EINTR)continue; if(errno==EAGAIN||errno==EWOULDBLOCK)return -1; return -1;} return 1; }
+static int write_exact(int fd, const void *data, size_t bytes) { const unsigned char *p=data;while(bytes) { ssize_t n=send(fd,p,bytes,0); if(n>0){p+=n;bytes-=(size_t)n;continue;} if(n<0&&errno==EINTR)continue; if(n<0&&(errno==EAGAIN||errno==EWOULDBLOCK))return 0; return 0;} return 1; }
 static int decode_token(const char *hex, unsigned char token[AUTH_TOKEN_BYTES]) { if(strlen(hex)!=AUTH_TOKEN_BYTES*2)return 0; for(size_t i=0;i<AUTH_TOKEN_BYTES;i++){unsigned value;if(sscanf(hex+i*2,"%2x",&value)!=1)return 0;token[i]=(unsigned char)value;}return 1; }
 static int authenticate_client(int fd, const unsigned char token[AUTH_TOKEN_BYTES]) { uint32_t len; unsigned char msg[4+AUTH_TOKEN_BYTES]; if(read_exact(fd,&len,4)<=0||len!=sizeof msg||read_exact(fd,msg,sizeof msg)<=0)return 0; const unsigned char*p=msg;if(u32(&p)!=AUTH_MAGIC)return 0;unsigned diff=0;for(size_t i=0;i<AUTH_TOKEN_BYTES;i++)diff|=p[i]^token[i];if(diff)return 0;uint32_t ready=READY_MAGIC;return write_exact(fd,&ready,sizeof ready); }
 static void set_input(Display *d, Window w, int width, int height, int interactive) { if(interactive&&valid_dimensions(width,height)) { XRectangle r={0,0,(unsigned short)width,(unsigned short)height}; XShapeCombineRectangles(d,w,ShapeInput,0,0,&r,1,ShapeSet,Unsorted); } else XShapeCombineRectangles(d,w,ShapeInput,0,0,NULL,0,ShapeSet,Unsorted); trace_input("mode",interactive,0); XFlush(d); }
@@ -253,7 +254,15 @@ int main(int argc,char **argv) {
                 trace_input("mouse",button,down); send_mouse(client,button,down,e.xbutton.x,e.xbutton.y);
             }
         }
-        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=0,.tv_usec=250000};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token)){close(client);client=-1;}else XMapRaised(d,w);} usleep(1000); continue; }
+        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token)){close(client);client=-1;}else XMapRaised(d,w);} usleep(1000); continue; }
+        struct pollfd client_poll={.fd=client,.events=POLLIN,.revents=0};
+        int poll_result=poll(&client_poll,1,50);
+        if(poll_result<0){if(errno==EINTR)continue;close(client);client=-1;continue;}
+        if(poll_result==0)continue;
+        if(!(client_poll.revents&POLLIN)){
+            if(client_poll.revents&(POLLERR|POLLHUP|POLLNVAL)){close(client);client=-1;}
+            continue;
+        }
         uint32_t len; int rr=read_exact(client,&len,4);
         if(rr==0) { close(client); client=-1; continue; }
         if(rr<0) { close(client); client=-1; continue; }

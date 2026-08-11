@@ -22,6 +22,7 @@ read -r -a cflags <<< "$(pkg-config --cflags x11 xext xrender gl)"
 read -r -a libs <<< "$(pkg-config --libs x11 xext xrender gl)"
 cc -Wall -Wextra -Werror -O2 "$HELPER" "${cflags[@]}" "${libs[@]}" -lm -o "$BINARY"
 printf '0 0 0 0 800 600\n' > "$HEARTBEAT"
+rm -f /tmp/gamehelper2-gpu-input.log
 
 # The single-quoted body is an intentionally isolated child shell script.
 # shellcheck disable=SC2016
@@ -80,6 +81,18 @@ client = connect_retry()
 authenticate(client, token)
 assert client.recv(4) == struct.pack("<I", READY)
 
+# GameHelper can pause for asset/plugin initialization after the handshake.
+# An idle-but-authenticated connection must remain valid instead of being
+# mistaken for EOF by the native receive timeout.
+time.sleep(1.5)
+client.settimeout(0.1)
+try:
+    assert client.recv(1, socket.MSG_PEEK) != b""
+except TimeoutError:
+    pass
+finally:
+    client.settimeout(None)
+
 payload = struct.pack("<II", INPUT, 0)
 header = struct.pack("<I", len(payload))
 client.sendall(header[:2])
@@ -96,6 +109,41 @@ client.sendall(struct.pack("<I", len(payload)) + payload)
 time.sleep(0.15)
 os.kill(pid, 0)
 client.close()
+
+# A stalled partial payload is bounded to one receive timeout, not four.
+time.sleep(0.1)
+partial = connect_retry()
+authenticate(partial, token)
+assert partial.recv(4) == struct.pack("<I", READY)
+payload = struct.pack("<II", INPUT, 0)
+partial.sendall(struct.pack("<I", len(payload)) + payload[:2])
+time.sleep(1.2)
+partial.settimeout(0.1)
+closed = False
+deadline = time.time() + 1.0
+while time.time() < deadline:
+    try:
+        if partial.recv(4096) == b"":
+            closed = True
+            break
+    except TimeoutError:
+        pass
+assert closed
+partial.close()
+os.kill(pid, 0)
+
+# POLLIN and POLLHUP may arrive together. Drain the final complete message
+# before closing so the input-mode transition is not discarded.
+time.sleep(0.1)
+final = connect_retry()
+authenticate(final, token)
+assert final.recv(4) == struct.pack("<I", READY)
+payload = struct.pack("<II", INPUT, 1)
+final.sendall(struct.pack("<I", len(payload)) + payload)
+final.shutdown(socket.SHUT_WR)
+time.sleep(0.2)
+assert "mode 1" in open("/tmp/gamehelper2-gpu-input.log", encoding="utf-8").read()
+final.close()
 print("PASS: native auth, split-header, malformed-font and malformed-frame smoke")
 PY
 ' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN"

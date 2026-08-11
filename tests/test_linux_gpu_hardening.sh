@@ -35,5 +35,7 @@ cancel_line="$(grep -n 'cancellationTokenSource?.Cancel' "$CTO/Overlay.cs" | hea
 join_line="$(grep -n 'renderThread?.Join' "$CTO/Overlay.cs" | head -1 | cut -d: -f1)"
 [[ -n "$cancel_line" && -n "$join_line" && "$cancel_line" -lt "$join_line" ]] || \
   fail 'Dispose does not cancel before joining the render thread'
+require 'backBuffer\?\.Dispose' "$CTO/Overlay.cs" 'overlay disposal still calls fragile COM Release on the back buffer'
+require 'renderView\?\.Dispose' "$CTO/Overlay.cs" 'overlay disposal still calls fragile COM Release on the render target'
 
 printf 'PASS: native GPU protocol and lifecycle hardening guards are present\n'
