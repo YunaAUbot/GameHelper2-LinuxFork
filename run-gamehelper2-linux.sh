@@ -122,11 +122,14 @@ trap 'stop_helper' EXIT
 trap 'exit 130' INT TERM
 
 echo "Path of Exile 2 detected; starting GameHelper2 only."
-setsid env \
-  STEAM_COMPAT_DATA_PATH="$compat_data" \
-  STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
-  STEAM_COMPAT_APP_ID="$POE2_APP_ID" \
-  "$PROTON" run "$GAMEHELPER2_EXE" &
+(
+  cd -- "$(dirname -- "$GAMEHELPER2_EXE")"
+  exec setsid env \
+    STEAM_COMPAT_DATA_PATH="$compat_data" \
+    STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
+    STEAM_COMPAT_APP_ID="$POE2_APP_ID" \
+    "$PROTON" run "$GAMEHELPER2_EXE"
+) &
 helper_pid=$!
 helper_pgid="$helper_pid"
 

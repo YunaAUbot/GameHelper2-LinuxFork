@@ -17,6 +17,9 @@ make_fixture() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PROTON_CALLS"
 printf '%s\n' "$$" > "$PROTON_PID_FILE"
+if [[ -n "${PROTON_PWD_FILE:-}" ]]; then
+  pwd > "$PROTON_PWD_FILE"
+fi
 if [[ "${PROTON_SPAWN_TERM_RESISTANT_CHILD:-0}" == "1" ]]; then
   bash -c 'trap "" TERM INT; while :; do sleep 1; done' &
   printf '%s\n' "$!" > "${PROTON_CHILD_PID_FILE:-$PROTON_PID_FILE-child}"
@@ -140,18 +143,21 @@ printf 'PASS: recognizes PoE2 behind Wine process naming\n'
 rm -rf "$FIXTURE"
 FIXTURE=""
 make_fixture
+mkdir -p "$FIXTURE/runtime"
+mv "$FIXTURE/GameHelper.exe" "$FIXTURE/runtime/GameHelper.exe"
 mkdir -p "$FIXTURE/proc/4242"
 printf 'Z:\\games\\PathOfExileSteam.exe\0' > "$FIXTURE/proc/4242/cmdline"
 printf 'SteamAppId=2694490\0' > "$FIXTURE/proc/4242/environ"
 
 GH2_PROC_ROOT="$FIXTURE/proc" \
 GH2_POLL_INTERVAL=0.05 \
-GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" \
+GAMEHELPER2_EXE="$FIXTURE/runtime/GameHelper.exe" \
 STEAM_ROOT="$FIXTURE/steam" \
 POE2_LIBRARY="$FIXTURE/library" \
 PROTON="$FIXTURE/proton" \
 PROTON_CALLS="$FIXTURE/proton-calls" \
 PROTON_PID_FILE="$FIXTURE/proton-pid" \
+PROTON_PWD_FILE="$FIXTURE/proton-pwd" \
 PROTON_SPAWN_TERM_RESISTANT_CHILD=1 \
   "$LAUNCHER" >"$FIXTURE/launcher-output" 2>&1 &
 LAUNCHER_PID=$!
@@ -163,8 +169,10 @@ for _ in {1..100}; do
 done
 [[ -s "$FIXTURE/proton-calls" ]] || \
   fail "helper was not launched for a running manually-started PoE2: $(cat "$FIXTURE/launcher-output")"
-[[ "$(cat "$FIXTURE/proton-calls")" == "run $FIXTURE/GameHelper.exe" ]] || \
+[[ "$(cat "$FIXTURE/proton-calls")" == "run $FIXTURE/runtime/GameHelper.exe" ]] || \
   fail "unexpected Proton invocation: $(cat "$FIXTURE/proton-calls")"
+[[ "$(cat "$FIXTURE/proton-pwd")" == "$FIXTURE/runtime" ]] || \
+  fail "helper was not started from its runtime directory: $(cat "$FIXTURE/proton-pwd")"
 
 rm -rf "$FIXTURE/proc/4242"
 for _ in {1..100}; do
