@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+HELPER="$ROOT/renderer-src/gamehelper2-gpu-overlay.c"
+CTO="$ROOT/renderer-src/ClickableTransparentOverlay/ClickableTransparentOverlay"
+
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+require() { grep -Eq "$1" "$2" || fail "$3"; }
+
+require 'AUTH_MAGIC' "$HELPER" 'native helper has no authentication handshake'
+require 'READY_MAGIC' "$HELPER" 'native helper does not acknowledge authenticated readiness'
+require 'AUTH_TOKEN_BYTES' "$HELPER" 'native helper does not validate a fixed-size launch token'
+require 'offset[[:space:]]*>[[:space:]]*ni|elems[[:space:]]*>[[:space:]]*ni[[:space:]]*-[[:space:]]*offset' "$HELPER" \
+  'draw command range check is not overflow-safe'
+require 'SIZE_MAX' "$HELPER" 'native parser lacks size overflow guards'
+require 'isfinite' "$HELPER" 'native parser does not reject non-finite geometry/scissors'
+require 'fw.*UINT32_MAX.*fh|fh.*UINT32_MAX.*fw' "$HELPER" 'font dimension multiplication is not guarded'
+require 'XDestroyRegion' "$HELPER" 'frame parser does not clean up its input region'
+require 'SO_RCVTIMEO' "$HELPER" 'accepted native socket has no explicit bounded receive mode'
+require 'EAGAIN.*EWOULDBLOCK|EWOULDBLOCK.*EAGAIN' "$HELPER" 'native reads do not distinguish retryable errors from EOF'
+
+require 'RandomNumberGenerator' "$CTO/NativeGpuProbe.cs" 'managed launch token is not cryptographically random'
+require 'WaitForReady' "$CTO/NativeGpuProbe.cs" 'managed probe does not wait for authenticated readiness'
+require 'IsConnected' "$CTO/NativeGpuProbe.cs" 'managed probe has no helper connection watchdog'
+require 'SendTimeout' "$CTO/NativeGpuTransport.cs" 'managed sends have no bounded timeout'
+require 'ReceiveTimeout' "$CTO/NativeGpuTransport.cs" 'managed receives have no bounded timeout'
+require 'MouseInputMagic' "$CTO/NativeGpuTransport.cs" 'managed transport does not accept native mouse events'
+require 'AddNativeMouseButton' "$CTO/NativeGpuProbe.cs" 'managed probe does not deliver native mouse buttons'
+require 'uint32_t msg\[6\].*MOUSE_INPUT_MAGIC' "$HELPER" 'native mouse event framing is not length plus 20-byte payload'
+require 'GAMEHELPER2_OVERLAY_BACKEND' "$CTO/Overlay.cs" 'native GPU backend selector is missing'
+require '"native-gpu"' "$CTO/Overlay.cs" 'native GPU backend is not explicit opt-in'
+
+cancel_line="$(grep -n 'cancellationTokenSource?.Cancel' "$CTO/Overlay.cs" | head -1 | cut -d: -f1)"
+join_line="$(grep -n 'renderThread?.Join' "$CTO/Overlay.cs" | head -1 | cut -d: -f1)"
+[[ -n "$cancel_line" && -n "$join_line" && "$cancel_line" -lt "$join_line" ]] || \
+  fail 'Dispose does not cancel before joining the render thread'
+
+printf 'PASS: native GPU protocol and lifecycle hardening guards are present\n'

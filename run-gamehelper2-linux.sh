@@ -121,6 +121,9 @@ stop_helper() {
 trap 'stop_helper' EXIT
 trap 'exit 130' INT TERM
 
+GAMEHELPER2_OVERLAY_BACKEND="${GAMEHELPER2_OVERLAY_BACKEND:-native-gpu}"
+PROTON_USE_WINED3D="${PROTON_USE_WINED3D:-1}"
+
 echo "Path of Exile 2 detected; starting GameHelper2 only."
 (
   cd -- "$(dirname -- "$GAMEHELPER2_EXE")"
@@ -128,6 +131,8 @@ echo "Path of Exile 2 detected; starting GameHelper2 only."
     STEAM_COMPAT_DATA_PATH="$compat_data" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
     STEAM_COMPAT_APP_ID="$POE2_APP_ID" \
+    GAMEHELPER2_OVERLAY_BACKEND="$GAMEHELPER2_OVERLAY_BACKEND" \
+    PROTON_USE_WINED3D="$PROTON_USE_WINED3D" \
     "$PROTON" run "$GAMEHELPER2_EXE"
 ) &
 helper_pid=$!

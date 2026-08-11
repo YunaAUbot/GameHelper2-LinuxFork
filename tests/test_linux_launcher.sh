@@ -17,6 +17,10 @@ make_fixture() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PROTON_CALLS"
 printf '%s\n' "$$" > "$PROTON_PID_FILE"
+if [[ -n "${PROTON_ENV_FILE:-}" ]]; then
+  printf 'backend=%s\nwined3d=%s\n' \
+    "${GAMEHELPER2_OVERLAY_BACKEND:-}" "${PROTON_USE_WINED3D:-}" > "$PROTON_ENV_FILE"
+fi
 if [[ -n "${PROTON_PWD_FILE:-}" ]]; then
   pwd > "$PROTON_PWD_FILE"
 fi
@@ -158,6 +162,7 @@ PROTON="$FIXTURE/proton" \
 PROTON_CALLS="$FIXTURE/proton-calls" \
 PROTON_PID_FILE="$FIXTURE/proton-pid" \
 PROTON_PWD_FILE="$FIXTURE/proton-pwd" \
+PROTON_ENV_FILE="$FIXTURE/proton-env" \
 PROTON_SPAWN_TERM_RESISTANT_CHILD=1 \
   "$LAUNCHER" >"$FIXTURE/launcher-output" 2>&1 &
 LAUNCHER_PID=$!
@@ -173,6 +178,10 @@ done
   fail "unexpected Proton invocation: $(cat "$FIXTURE/proton-calls")"
 [[ "$(cat "$FIXTURE/proton-pwd")" == "$FIXTURE/runtime" ]] || \
   fail "helper was not started from its runtime directory: $(cat "$FIXTURE/proton-pwd")"
+grep -qx 'backend=native-gpu' "$FIXTURE/proton-env" || \
+  fail "native GPU backend was not selected: $(cat "$FIXTURE/proton-env")"
+grep -qx 'wined3d=1' "$FIXTURE/proton-env" || \
+  fail "helper-only WineD3D default was not selected: $(cat "$FIXTURE/proton-env")"
 
 rm -rf "$FIXTURE/proc/4242"
 for _ in {1..100}; do
