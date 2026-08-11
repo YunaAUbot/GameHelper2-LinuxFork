@@ -174,7 +174,10 @@ for _ in {1..100}; do
 done
 [[ -s "$FIXTURE/proton-calls" ]] || \
   fail "helper was not launched for a running manually-started PoE2: $(cat "$FIXTURE/launcher-output")"
-[[ "$(cat "$FIXTURE/proton-calls")" == "run $FIXTURE/runtime/GameHelper.exe" ]] || \
+# A second `proton run` reinitializes the live PoE2 prefix and makes lazily
+# loaded Atlas data tables disappear.  Join the existing Wine session without
+# repeating Proton's session/drive setup.
+[[ "$(cat "$FIXTURE/proton-calls")" == "runinprefix $FIXTURE/runtime/GameHelper.exe" ]] || \
   fail "unexpected Proton invocation: $(cat "$FIXTURE/proton-calls")"
 [[ "$(cat "$FIXTURE/proton-pwd")" == "$FIXTURE/runtime" ]] || \
   fail "helper was not started from its runtime directory: $(cat "$FIXTURE/proton-pwd")"
@@ -300,7 +303,7 @@ for _ in {1..100}; do
   kill -0 "$LAUNCHER_PID" 2>/dev/null || break
   sleep 0.02
 done
-[[ "$(cat "$FIXTURE/proton-calls")" == "run $build_exe" ]] || \
+[[ "$(cat "$FIXTURE/proton-calls")" == "runinprefix $build_exe" ]] || \
   fail "developer Release output was not selected: $(cat "$FIXTURE/launcher-output")"
 rm -rf "$FIXTURE/proc/6262"
 for _ in {1..100}; do

@@ -133,7 +133,7 @@ echo "Path of Exile 2 detected; starting GameHelper2 only."
     STEAM_COMPAT_APP_ID="$POE2_APP_ID" \
     GAMEHELPER2_OVERLAY_BACKEND="$GAMEHELPER2_OVERLAY_BACKEND" \
     PROTON_USE_WINED3D="$PROTON_USE_WINED3D" \
-    "$PROTON" run "$GAMEHELPER2_EXE"
+    "$PROTON" runinprefix "$GAMEHELPER2_EXE"
 ) &
 helper_pid=$!
 helper_pgid="$helper_pid"
