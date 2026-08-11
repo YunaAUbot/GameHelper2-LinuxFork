@@ -32,7 +32,8 @@
         /// <returns>weather the key is pressed or not.</returns>
         public static bool IsKeyPressed(VK nVirtKey)
         {
-            return Convert.ToBoolean(User32.GetKeyState(nVirtKey) & 0x8000);
+            return global::ClickableTransparentOverlay.NativeKeyState.IsDown((int)nVirtKey) ||
+                   Convert.ToBoolean(User32.GetKeyState(nVirtKey) & 0x8000);
         }
 
         /// <summary>
@@ -49,10 +50,14 @@
         /// <returns>true if the key is pressed and key is not in timeout.</returns>
         public static bool IsKeyPressedAndNotTimeout(VK nVirtKey, int timeout = 200)
         {
-            var actual = IsKeyPressed(nVirtKey);
+            var nativePressed = global::ClickableTransparentOverlay.NativeKeyState.HasPressed((int)nVirtKey);
+            var actual = nativePressed ||
+                         IsKeyPressed(nVirtKey);
             var currTime = sw.ElapsedMilliseconds;
             if (actual && currTime > nVirtKeyTimeouts[(int)nVirtKey])
             {
+                if (nativePressed)
+                    global::ClickableTransparentOverlay.NativeKeyState.ConsumePressed((int)nVirtKey);
                 nVirtKeyTimeouts[(int)nVirtKey] = currTime + timeout;
                 return true;
             }

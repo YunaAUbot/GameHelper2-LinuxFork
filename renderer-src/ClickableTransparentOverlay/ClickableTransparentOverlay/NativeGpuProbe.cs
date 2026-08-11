@@ -117,6 +117,7 @@ namespace ClickableTransparentOverlay
         internal static void Stop()
         {
             transport?.Dispose(); transport = null; fontSent = false; interactive = null; keyboardCapture = null; menuInput = false;
+            NativeKeyState.Reset();
             if (heartbeatWindowsPath is not null) { try { File.Delete(heartbeatWindowsPath); } catch { } }
             heartbeatWindowsPath = null;
         }

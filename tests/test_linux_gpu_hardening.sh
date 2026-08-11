@@ -37,5 +37,12 @@ join_line="$(grep -n 'renderThread?.Join' "$CTO/Overlay.cs" | head -1 | cut -d: 
   fail 'Dispose does not cancel before joining the render thread'
 require 'backBuffer\?\.Dispose' "$CTO/Overlay.cs" 'overlay disposal still calls fragile COM Release on the back buffer'
 require 'renderView\?\.Dispose' "$CTO/Overlay.cs" 'overlay disposal still calls fragile COM Release on the render target'
+require 'XGrabKey.*f12_keycode' "$HELPER" 'the hidden overlay has no passive F12 hotkey grab'
+require 'NativeKeyState.Update' "$CTO/ImGuiInputHandler.cs" 'native key events do not update the managed hotkey state'
+require 'NativeKeyState.ConsumePressed' "$CTO/Win32/Utils.cs" 'GameHelper hotkey polling does not consume native press edges'
+require 'KEYBOARD_RETRY_SECONDS' "$HELPER" 'keyboard capture does not retain bounded retry state'
+require 'close_client.*keyboard' "$HELPER" 'client close paths do not release keyboard capture'
+require 'grab_error==BadAccess' "$HELPER" 'passive F12 BadAccess is not handled explicitly'
+require 'if\(grab_error\).*XUngrabKey' "$HELPER" 'partial passive F12 grabs are not released after an X11 error'
 
 printf 'PASS: native GPU protocol and lifecycle hardening guards are present\n'

@@ -3,6 +3,7 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/XKBlib.h>
 #include <X11/keysym.h>
 #include <X11/extensions/Xrender.h>
 #include <X11/extensions/shape.h>
@@ -38,6 +39,7 @@
 #define MAX_OVERLAY_DIMENSION 32767
 #define MIN_OVERLAY_POSITION (-32768)
 #define MAX_OVERLAY_POSITION 32767
+#define KEYBOARD_RETRY_SECONDS 0.25
 static double now_seconds(void) { struct timespec v; clock_gettime(CLOCK_MONOTONIC, &v); return v.tv_sec + v.tv_nsec / 1e9; }
 static void trace_input(const char *event, int a, int b) { FILE *f=fopen("/tmp/gamehelper2-gpu-input.log","a"); if(f){fprintf(f,"%.3f %s %d %d\n",now_seconds(),event,a,b);fclose(f);} }
 static void trace_renderer(void) {
@@ -67,7 +69,7 @@ static int poe_geometry(Display *d, int screen, int *x, int *y, int *width, int 
  * arrived, wait for the rest rather than discarding a partial payload; the
  * managed side writes every payload atomically to this local connection. */
 static int read_exact(int fd, void *out, size_t bytes) { unsigned char *p=out;while(bytes) { ssize_t n=recv(fd,p,bytes,0); if(n>0){p+=n;bytes-=(size_t)n;continue;} if(n==0)return 0; if(errno==EINTR)continue; if(errno==EAGAIN||errno==EWOULDBLOCK)return -1; return -1;} return 1; }
-static int write_exact(int fd, const void *data, size_t bytes) { const unsigned char *p=data;while(bytes) { ssize_t n=send(fd,p,bytes,0); if(n>0){p+=n;bytes-=(size_t)n;continue;} if(n<0&&errno==EINTR)continue; if(n<0&&(errno==EAGAIN||errno==EWOULDBLOCK))return 0; return 0;} return 1; }
+static int write_exact(int fd, const void *data, size_t bytes) { const unsigned char *p=data;while(bytes) { ssize_t n=send(fd,p,bytes,MSG_NOSIGNAL); if(n>0){p+=n;bytes-=(size_t)n;continue;} if(n<0&&errno==EINTR)continue; if(n<0&&(errno==EAGAIN||errno==EWOULDBLOCK))return 0; return 0;} return 1; }
 static int decode_token(const char *hex, unsigned char token[AUTH_TOKEN_BYTES]) { if(strlen(hex)!=AUTH_TOKEN_BYTES*2)return 0; for(size_t i=0;i<AUTH_TOKEN_BYTES;i++){unsigned value;if(sscanf(hex+i*2,"%2x",&value)!=1)return 0;token[i]=(unsigned char)value;}return 1; }
 static int authenticate_client(int fd, const unsigned char token[AUTH_TOKEN_BYTES]) { uint32_t len; unsigned char msg[4+AUTH_TOKEN_BYTES]; if(read_exact(fd,&len,4)<=0||len!=sizeof msg||read_exact(fd,msg,sizeof msg)<=0)return 0; const unsigned char*p=msg;if(u32(&p)!=AUTH_MAGIC)return 0;unsigned diff=0;for(size_t i=0;i<AUTH_TOKEN_BYTES;i++)diff|=p[i]^token[i];if(diff)return 0;uint32_t ready=READY_MAGIC;return write_exact(fd,&ready,sizeof ready); }
 static void set_input(Display *d, Window w, int width, int height, int interactive) { if(interactive&&valid_dimensions(width,height)) { XRectangle r={0,0,(unsigned short)width,(unsigned short)height}; XShapeCombineRectangles(d,w,ShapeInput,0,0,&r,1,ShapeSet,Unsorted); } else XShapeCombineRectangles(d,w,ShapeInput,0,0,NULL,0,ShapeSet,Unsorted); trace_input("mode",interactive,0); XFlush(d); }
@@ -94,16 +96,38 @@ static void send_key(int fd, KeySym key, int down, uint32_t codepoint) {
     uint32_t msg[6] = { 20, KEY_INPUT_MAGIC, (uint32_t)key, (uint32_t)down, codepoint, 0 };
     (void)write_exact(fd, msg, sizeof msg);
 }
-static int set_keyboard(Display *d, Window w, int capture) {
-    static int active=0;
-    if(capture==active) return active;
-    if(capture) {
-        int result=XGrabKeyboard(d,w,False,GrabModeAsync,GrabModeAsync,CurrentTime);
-        if(result==GrabSuccess) active=1;
-        trace_input("keyboard",capture,result);
-    } else { XUngrabKeyboard(d,CurrentTime); active=0; trace_input("keyboard",capture,0); }
-    XFlush(d); return active;
+struct keyboard_capture { int requested; int active; double retry_at; unsigned char down[256]; };
+static void release_keyboard(Display *d, int fd, struct keyboard_capture *state) {
+    if(state->active) {
+        for(size_t i=0;i<sizeof state->down;i++) if(state->down[i])
+            send_key(fd,XkbKeycodeToKeysym(d,(KeyCode)i,0,0),0,0);
+        XUngrabKeyboard(d,CurrentTime);
+        trace_input("keyboard",0,0);
+    }
+    memset(state->down,0,sizeof state->down);
+    state->active=0;
+    XFlush(d);
 }
+static void request_keyboard(Display *d, Window w, int fd, struct keyboard_capture *state, int capture) {
+    state->requested=capture;
+    if(!capture) { state->retry_at=0; release_keyboard(d,fd,state); return; }
+    if(!state->active && now_seconds()>=state->retry_at) {
+        int result=XGrabKeyboard(d,w,False,GrabModeAsync,GrabModeAsync,CurrentTime);
+        if(result==GrabSuccess) state->active=1;
+        else state->retry_at=now_seconds()+KEYBOARD_RETRY_SECONDS;
+        trace_input("keyboard",capture,result);
+        XFlush(d);
+    }
+}
+static void close_client(Display *d, int *fd, struct keyboard_capture *keyboard) {
+    release_keyboard(d,*fd,keyboard);
+    keyboard->requested=0;
+    keyboard->retry_at=0;
+    if(*fd>=0) close(*fd);
+    *fd=-1;
+}
+static int passive_grab_error;
+static int record_passive_grab_error(Display *d, XErrorEvent *event) { (void)d; passive_grab_error=event->error_code; return 0; }
 /* MotionNotify is only generated while the pointer is already inside the
  * current ShapeInput region.  Query the X server once per compositor cycle as
  * the authoritative position source instead, so ImGui can correctly retain
@@ -225,10 +249,22 @@ int main(int argc,char **argv) {
        GameHelper2 then observes PoE2 as unfocused and fades its UI. The hint
        prevents focus acquisition while X Shape still routes mouse events. */
     XWMHints hints; memset(&hints,0,sizeof hints); hints.flags=InputHint; hints.input=False; XSetWMHints(d,w,&hints);
+    KeyCode f12_keycode=XKeysymToKeycode(d,XK_F12);
+    if(f12_keycode!=0) {
+        int (*previous_error_handler)(Display*,XErrorEvent*)=XSetErrorHandler(record_passive_grab_error);
+        passive_grab_error=0;
+        XGrabKey(d,f12_keycode,AnyModifier,RootWindow(d,screen),False,GrabModeAsync,GrabModeAsync);
+        XSync(d,False);
+        int grab_error=passive_grab_error;
+        if(grab_error) { XUngrabKey(d,f12_keycode,AnyModifier,RootWindow(d,screen)); XSync(d,False); }
+        XSetErrorHandler(previous_error_handler);
+        if(grab_error==BadAccess) { fputs("gpu: F12 passive grab unavailable\n",stderr); f12_keycode=0; }
+        else if(grab_error) { fputs("gpu: F12 passive grab failed\n",stderr); f12_keycode=0; }
+    }
     int se,er;if(XShapeQueryExtension(d,&se,&er))set_input(d,w,width,height,0);
     GLXContext ctx=glXCreateNewContext(d,cfg,GLX_RGBA_TYPE,NULL,True);if(!ctx||!glXMakeCurrent(d,w,ctx)){fputs("gpu: GLX failed\n",stderr);return 5;}trace_renderer();GLuint font;glGenTextures(1,&font);glBindTexture(GL_TEXTURE_2D,font);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     int listener=socket(AF_INET,SOCK_STREAM,0), client=-1,yes=1;setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);fcntl(listener,F_SETFL,fcntl(listener,F_GETFL,0)|O_NONBLOCK);struct sockaddr_in addr;memset(&addr,0,sizeof addr);addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);addr.sin_port=htons(port);if(bind(listener,(struct sockaddr*)&addr,sizeof addr)||listen(listener,1)){perror("gpu bind");return 6;}double started=now_seconds();
-    int input_mode=0;
+    int input_mode=0; struct keyboard_capture keyboard={0};
     while(now_seconds()-started<duration) {
         struct stat hb;
         if(stat(argv[6],&hb)||now_seconds()-hb.st_mtime>3) break;
@@ -238,6 +274,7 @@ int main(int argc,char **argv) {
         if(!poe_geometry(d,screen,&x,&y,&width,&height)) { x=heartbeat_x;y=heartbeat_y;width=heartbeat_width;height=heartbeat_height; }
         if(valid_geometry(x,y,width,height)) { XMoveResizeWindow(d,w,x,y,(unsigned)width,(unsigned)height); XRaiseWindow(d,w); }
         if(requested!=input_mode) { input_mode=requested; set_input(d,w,width,height,input_mode); }
+        if(keyboard.requested&&!keyboard.active) request_keyboard(d,w,client,&keyboard,1);
         send_pointer_position(d,w,client);
         while(XPending(d)) {
             XEvent e; XNextEvent(d,&e);
@@ -246,6 +283,7 @@ int main(int argc,char **argv) {
                 char text[16]; KeySym key=NoSymbol; int down=e.type==KeyPress;
                 int chars=down?XLookupString(&e.xkey,text,sizeof text,&key,NULL):0;
                 if(!down) key=XLookupKeysym(&e.xkey,0);
+                if(keyboard.active&&e.xkey.keycode<sizeof keyboard.down) keyboard.down[e.xkey.keycode]=(unsigned char)down;
                 send_key(client,key,down,down?utf8_codepoint(text,chars):0);
             } else if(client>=0&&e.type==ButtonPress&&(e.xbutton.button>=4&&e.xbutton.button<=7))
                 send_mouse(client,-2-(int)(e.xbutton.button-4),1,e.xbutton.x,e.xbutton.y);
@@ -254,22 +292,22 @@ int main(int argc,char **argv) {
                 trace_input("mouse",button,down); send_mouse(client,button,down,e.xbutton.x,e.xbutton.y);
             }
         }
-        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token)){close(client);client=-1;}else XMapRaised(d,w);} usleep(1000); continue; }
+        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token))close_client(d,&client,&keyboard);else XMapRaised(d,w);} usleep(1000); continue; }
         struct pollfd client_poll={.fd=client,.events=POLLIN,.revents=0};
         int poll_result=poll(&client_poll,1,50);
-        if(poll_result<0){if(errno==EINTR)continue;close(client);client=-1;continue;}
+        if(poll_result<0){if(errno==EINTR)continue;close_client(d,&client,&keyboard);continue;}
         if(poll_result==0)continue;
         if(!(client_poll.revents&POLLIN)){
-            if(client_poll.revents&(POLLERR|POLLHUP|POLLNVAL)){close(client);client=-1;}
+            if(client_poll.revents&(POLLERR|POLLHUP|POLLNVAL))close_client(d,&client,&keyboard);
             continue;
         }
         uint32_t len; int rr=read_exact(client,&len,4);
-        if(rr==0) { close(client); client=-1; continue; }
-        if(rr<0) { close(client); client=-1; continue; }
-        if(len<4||len>64*1024*1024) { close(client); client=-1; continue; }
+        if(rr==0) { close_client(d,&client,&keyboard); continue; }
+        if(rr<0) { close_client(d,&client,&keyboard); continue; }
+        if(len<4||len>64*1024*1024) { close_client(d,&client,&keyboard); continue; }
         unsigned char *buf=malloc(len); if(!buf) break;
         rr=read_exact(client,buf,len);
-        if(rr<=0) { free(buf); close(client); client=-1; continue; }
+        if(rr<=0) { free(buf); close_client(d,&client,&keyboard); continue; }
         if(rr>0) {
             const unsigned char*p=buf;
             if(len>=4) {
@@ -278,13 +316,13 @@ int main(int argc,char **argv) {
                     uint32_t fw=u32(&p),fh=u32(&p),bl=u32(&p);
                     if(fw>0&&fh>0&&fw<=UINT32_MAX/fh&&fw*fh<=UINT32_MAX/4u&&bl==fw*fh*4u&&bl==(uint32_t)(len-16)) { glBindTexture(GL_TEXTURE_2D,font); glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,fw,fh,0,GL_RGBA,GL_UNSIGNED_BYTE,p); }
                 } else if(len==8&&magic==INPUT_MODE_MAGIC) set_input(d,w,width,height,u32(&p)!=0);
-                else if(len==8&&magic==KEYBOARD_MODE_MAGIC) set_keyboard(d,w,u32(&p)!=0);
+                else if(len==8&&magic==KEYBOARD_MODE_MAGIC) request_keyboard(d,w,client,&keyboard,u32(&p)!=0);
                 else draw_frame(d,w,buf,len,width,height,font);
             }
         }
         free(buf);
     }
-    set_keyboard(d,w,0);
-    if(client>=0) close(client);
+    close_client(d,&client,&keyboard);
+    if(f12_keycode!=0) XUngrabKey(d,f12_keycode,AnyModifier,RootWindow(d,screen));
     close(listener);glDeleteTextures(1,&font);glXMakeCurrent(d,None,NULL);glXDestroyContext(d,ctx);XDestroyWindow(d,w);XFree(vi);XFree(cfgs);XCloseDisplay(d);return 0;
 }

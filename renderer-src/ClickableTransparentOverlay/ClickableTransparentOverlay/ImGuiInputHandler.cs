@@ -68,6 +68,7 @@
         internal void AddNativeKey(uint keysym, bool down, uint codepoint)
         {
             var io = ImGui.GetIO();
+            if (TryMapNativeVirtualKey(keysym, out var virtualKey)) NativeKeyState.Update((int)virtualKey, down);
             if (TryMapNativeKey(keysym, out var key)) io.AddKeyEvent(key, down);
             if (down && codepoint != 0) io.AddInputCharacter(codepoint);
         }
@@ -284,6 +285,26 @@
             else if (key >= '0' && key <= '9') result = ImGuiKey._0 + (int)(key - '0');
             else if (key == ' ') result = ImGuiKey.Space;
             return result != ImGuiKey.None;
+        }
+
+        private static bool TryMapNativeVirtualKey(uint key, out VK result)
+        {
+            result = key switch
+            {
+                >= 0xffbe and <= 0xffd5 => VK.F1 + (int)(key - 0xffbe),
+                >= 'a' and <= 'z' => VK.KEY_A + (int)(key - 'a'),
+                >= 'A' and <= 'Z' => VK.KEY_A + (int)(key - 'A'),
+                >= '0' and <= '9' => VK.KEY_0 + (int)(key - '0'),
+                0xff09 => VK.TAB, 0xff0d => VK.RETURN, 0xff1b => VK.ESCAPE,
+                0xff08 => VK.BACK, 0xffff => VK.DELETE, 0xff63 => VK.INSERT,
+                0xff50 => VK.HOME, 0xff57 => VK.END, 0xff55 => VK.PRIOR,
+                0xff56 => VK.NEXT, 0xff51 => VK.LEFT, 0xff52 => VK.UP,
+                0xff53 => VK.RIGHT, 0xff54 => VK.DOWN,
+                0xffe1 or 0xffe2 => VK.SHIFT, 0xffe3 or 0xffe4 => VK.CONTROL,
+                0xffe9 or 0xffea => VK.MENU, ' ' => VK.SPACE,
+                _ => 0,
+            };
+            return result != 0;
         }
 
         private static int GET_WHEEL_DELTA_WPARAM(UIntPtr wParam) => Utils.Hiword((int)wParam);
