@@ -41,6 +41,7 @@
 #define MAX_OVERLAY_POSITION 32767
 #define KEYBOARD_RETRY_SECONDS 0.25
 static double now_seconds(void) { struct timespec v; clock_gettime(CLOCK_MONOTONIC, &v); return v.tv_sec + v.tv_nsec / 1e9; }
+static double wall_seconds(void) { struct timespec v; clock_gettime(CLOCK_REALTIME, &v); return v.tv_sec + v.tv_nsec / 1e9; }
 static void trace_input(const char *event, int a, int b) { FILE *f=fopen("/tmp/gamehelper2-gpu-input.log","a"); if(f){fprintf(f,"%.3f %s %d %d\n",now_seconds(),event,a,b);fclose(f);} }
 static void trace_renderer(void) {
     const char *vendor=(const char*)glGetString(GL_VENDOR);
@@ -139,7 +140,8 @@ static void send_pointer_position(Display *d, Window w, int fd) {
     if (fd >= 0 && XQueryPointer(d, w, &root, &child, &root_x, &root_y, &win_x, &win_y, &mask))
         send_mouse(fd, -1, 0, win_x, win_y);
 }
-static int heartbeat_state(const char *path, int *x, int *y, int *width, int *height) { FILE *f=fopen(path,"r"); long stamp=0; int mode=0; if(f){if(fscanf(f,"%ld %d %d %d %d %d",&stamp,&mode,x,y,width,height)!=6)mode=0;fclose(f);} (void)stamp; return mode!=0; }
+static double heartbeat_timestamp_seconds(const char *path) { FILE *f=fopen(path,"r"); long long stamp=0; if(f){if(fscanf(f,"%lld",&stamp)!=1)stamp=0;fclose(f);} return stamp>0?(double)stamp/1000.0:0.0; }
+static int heartbeat_state(const char *path, int *x, int *y, int *width, int *height) { FILE *f=fopen(path,"r"); long long stamp=0; int mode=0; if(f){if(fscanf(f,"%lld %d %d %d %d %d",&stamp,&mode,x,y,width,height)!=6)mode=0;fclose(f);} (void)stamp; return mode!=0; }
 /* Make only large, solid ImGui primitives receptive to input.  Dear ImGui
  * emits the menu/window background as two large filled triangles; text-only
  * overlays (e.g. ground-item labels) are made of tiny glyph triangles and
@@ -267,7 +269,9 @@ int main(int argc,char **argv) {
     int input_mode=0; struct keyboard_capture keyboard={0};
     while(now_seconds()-started<duration) {
         struct stat hb;
-        if(stat(argv[6],&hb)||now_seconds()-hb.st_mtime>3) break;
+        if(stat(argv[6],&hb)) break;
+        double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
+        if(heartbeat_timestamp<=0||wall_seconds()-heartbeat_timestamp>3) break;
         int heartbeat_x=x,heartbeat_y=y,heartbeat_width=width,heartbeat_height=height;
         int requested=heartbeat_state(argv[6],&heartbeat_x,&heartbeat_y,&heartbeat_width,&heartbeat_height);
         if(!valid_geometry(heartbeat_x,heartbeat_y,heartbeat_width,heartbeat_height)){heartbeat_x=x;heartbeat_y=y;heartbeat_width=width;heartbeat_height=height;requested=0;}

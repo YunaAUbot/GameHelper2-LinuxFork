@@ -24,7 +24,7 @@ read -r -a cflags <<< "$(pkg-config --cflags x11 xext xrender gl)"
 read -r -a libs <<< "$(pkg-config --libs x11 xext xrender gl)"
 cc -Wall -Wextra -Werror -O2 "$HELPER" "${cflags[@]}" "${libs[@]}" -lm -o "$HELPER_BINARY"
 cc -Wall -Wextra -Werror -O2 "$INJECTOR_SOURCE" -lX11 -Wl,-l:libXtst.so.6 -o "$INJECTOR_BINARY"
-printf '0 0 0 0 800 600\n' > "$HEARTBEAT"
+printf '%s 0 0 0 800 600\n' "$(date +%s%3N)" > "$HEARTBEAT"
 
 # shellcheck disable=SC2016
 xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX +extension XTEST +render -noreset' bash -c '
