@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gamehelper2-devbridge-mcp"
+version = "0.1.0"
+description = "Bounded local snapshot MCP for GameHelper2 DevBridge"
+requires-python = ">=3.11"
+dependencies = ["mcp>=1.0,<2.0"]
+
+[project.scripts]
+gamehelper2-devbridge = "devbridge_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["devbridge_mcp"]
