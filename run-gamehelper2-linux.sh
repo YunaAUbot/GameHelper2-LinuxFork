@@ -93,8 +93,13 @@ if [[ -z "${GAMEHELPER2_EXE:-}" ]]; then
 fi
 GH2_POLL_INTERVAL="${GH2_POLL_INTERVAL:-1}"
 GH2_GAME_MISS_LIMIT="${GH2_GAME_MISS_LIMIT:-10}"
+GH2_HELPER_START_LIMIT="${GH2_HELPER_START_LIMIT:-10}"
 [[ "$GH2_GAME_MISS_LIMIT" =~ ^[1-9][0-9]*$ ]] || {
   echo "GH2_GAME_MISS_LIMIT must be a positive integer." >&2
+  exit 2
+}
+[[ "$GH2_HELPER_START_LIMIT" =~ ^[1-9][0-9]*$ ]] || {
+  echo "GH2_HELPER_START_LIMIT must be a positive integer." >&2
   exit 2
 }
 
@@ -178,6 +183,8 @@ helper_pgid="$helper_pid"
 
 echo "GameHelper2 started. It will stop automatically when Path of Exile 2 exits."
 game_misses=0
+helper_start_checks=0
+helper_wrapper_status=""
 while true; do
   if [[ -z "$helper_heartbeat" ]]; then
     shopt -s nullglob
@@ -191,6 +198,20 @@ while true; do
       fi
     done
     shopt -u nullglob
+    if [[ -z "$helper_heartbeat" ]] && ! kill -0 "$helper_pid" 2>/dev/null; then
+      if [[ -z "$helper_wrapper_status" ]]; then
+        set +e
+        wait "$helper_pid" 2>/dev/null
+        helper_wrapper_status=$?
+        set -e
+      fi
+      (( helper_start_checks += 1 ))
+      if (( helper_start_checks >= GH2_HELPER_START_LIMIT )); then
+        echo "GameHelper2 exited before publishing its heartbeat."
+        stop_helper
+        exit "$helper_wrapper_status"
+      fi
+    fi
   elif [[ ! -e "$helper_heartbeat" ]] && ! is_own_helper_process "$helper_managed_pid"; then
     echo "GameHelper2 exited."
     break

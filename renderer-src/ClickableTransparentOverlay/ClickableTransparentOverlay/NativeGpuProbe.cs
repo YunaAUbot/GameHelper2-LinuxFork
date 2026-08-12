@@ -63,6 +63,8 @@ namespace ClickableTransparentOverlay
 
         internal static void ToggleMenuInput() => menuInput = !menuInput;
 
+        internal static void InvalidateFont() => fontSent = false;
+
         internal static void Present(ImGuiNET.ImDrawDataPtr drawData, ImGuiRenderer renderer)
         {
             if (transport is null) return;

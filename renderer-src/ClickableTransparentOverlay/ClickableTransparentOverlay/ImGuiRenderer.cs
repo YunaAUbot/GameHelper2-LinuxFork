@@ -35,6 +35,9 @@
         ID3D11DepthStencilState depthStencilState;
         int vertexBufferSize = 5000, indexBufferSize = 10000;
         readonly Dictionary<IntPtr, ID3D11ShaderResourceView> textureResources = new();
+        readonly HashSet<IntPtr> nativeTextureIds = new();
+        private readonly bool nativeOnly;
+        private long nextNativeTextureId = 1;
         private byte[] nativeFontPixels = Array.Empty<byte>();
         private int nativeFontWidth;
         private int nativeFontHeight;
@@ -43,13 +46,17 @@
         internal (byte[] Pixels, int Width, int Height, IntPtr TextureId) GetNativeFontAtlas() =>
             (this.nativeFontPixels, this.nativeFontWidth, this.nativeFontHeight, this.nativeFontTextureId);
 
-        public ImGuiRenderer(ID3D11Device device, ID3D11DeviceContext deviceContext, int width, int height)
+        public ImGuiRenderer(ID3D11Device device, ID3D11DeviceContext deviceContext, int width, int height, bool nativeOnly = false)
         {
             this.device = device;
             this.deviceContext = deviceContext;
+            this.nativeOnly = nativeOnly;
 
-            device.AddRef();
-            deviceContext.AddRef();
+            if (!this.nativeOnly)
+            {
+                device.AddRef();
+                deviceContext.AddRef();
+            }
 
             ImGui.CreateContext();
             var io = ImGui.GetIO();
@@ -58,7 +65,14 @@
             io.ConfigFlags |= ImGuiConfigFlags.DockingEnable;
             ImGui.StyleColorsDark();
             this.Resize(width, height);
-            this.CreateDeviceObjects();
+            if (this.nativeOnly)
+            {
+                this.CreateFontsTexture();
+            }
+            else
+            {
+                this.CreateDeviceObjects();
+            }
         }
 
         public void Update(float deltaTime, Action DoRender)
@@ -188,7 +202,14 @@
         public void Dispose()
         {
             if (device == null)
+            {
+                this.nativeTextureIds.Clear();
+                this.nativeFontPixels = Array.Empty<byte>();
+                this.nativeFontWidth = 0;
+                this.nativeFontHeight = 0;
+                this.nativeFontTextureId = IntPtr.Zero;
                 return;
+            }
 
             this.DeRegisterAllTexture();
             fontSampler?.Release();
@@ -212,6 +233,13 @@
 
         public IntPtr CreateImageTexture(Image<Rgba32> image, Format format)
         {
+            if (this.nativeOnly)
+            {
+                var handle = new IntPtr(++this.nextNativeTextureId);
+                this.nativeTextureIds.Add(handle);
+                return handle;
+            }
+
             var texDesc = new Texture2DDescription(format, image.Width, image.Height, 1, 1);
             if (!image.DangerousTryGetSinglePixelMemory(out Memory<Rgba32> memory))
             {
@@ -227,6 +255,11 @@
 
         public bool RemoveImageTexture(IntPtr handle)
         {
+            if (this.nativeOnly)
+            {
+                return this.nativeTextureIds.Remove(handle);
+            }
+
             using var tex = this.DeRegisterTexture(handle);
             return tex != null;
         }
@@ -269,10 +302,15 @@
         {
             var io = ImGui.GetIO();
             io.Fonts.GetTexDataAsRGBA32(out byte* pixels, out var width, out var height);
-            this.nativeFontPixels = new byte[width * height * 4];
-            System.Runtime.InteropServices.Marshal.Copy((IntPtr)pixels, this.nativeFontPixels, 0, this.nativeFontPixels.Length);
-            this.nativeFontWidth = width;
-            this.nativeFontHeight = height;
+            this.CaptureNativeFontAtlas(pixels, width, height);
+            if (this.nativeOnly)
+            {
+                this.nativeFontTextureId = new IntPtr(1);
+                io.Fonts.SetTexID(this.nativeFontTextureId);
+                io.Fonts.ClearTexData();
+                return;
+            }
+
             var texDesc = new Texture2DDescription(Format.R8G8B8A8_UNorm, width, height, 1, 1);
             var subResource = new SubresourceData(pixels, texDesc.Width * 4);
             using var texture = device.CreateTexture2D(texDesc, new[] { subResource });
@@ -285,6 +323,14 @@
             this.nativeFontTextureId = RegisterTexture(device.CreateShaderResourceView(texture, resViewDesc));
             io.Fonts.SetTexID(this.nativeFontTextureId);
             io.Fonts.ClearTexData();
+        }
+
+        private void CaptureNativeFontAtlas(byte* pixels, int width, int height)
+        {
+            this.nativeFontPixels = new byte[width * height * 4];
+            System.Runtime.InteropServices.Marshal.Copy((IntPtr)pixels, this.nativeFontPixels, 0, this.nativeFontPixels.Length);
+            this.nativeFontWidth = width;
+            this.nativeFontHeight = height;
         }
 
         void CreateFontSampler()

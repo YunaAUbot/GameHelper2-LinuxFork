@@ -22,8 +22,27 @@ grep -q 'GAMEHELPER2_OVERLAY_BACKEND' "$CTO/Overlay.cs" || fail "GameHelper2 bac
 grep -q 'GameHelper2.renderer.log' "$CTO/Overlay.cs" || fail "managed renderer diagnostics are missing"
 grep -q 'native GPU helper unavailable' "$CTO/Overlay.cs" || fail "native GPU startup does not fail closed"
 grep -q 'NativeGpu' "$CTO/Overlay.cs" || fail "GPU compositor is not integrated into Overlay"
-grep -q 'DriverType.Hardware' "$CTO/Overlay.cs" || fail "overlay no longer requests the hardware D3D11 device"
+python3 - "$CTO/Overlay.cs" "$CTO/ImGuiRenderer.cs" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+overlay = Path(sys.argv[1]).read_text()
+renderer = Path(sys.argv[2]).read_text()
+method = overlay.split('private async Task InitializeResources()', 1)[1]
+method = method.split('private bool ProcessMessage', 1)[0]
+if not re.search(r'if\s*\(this\.useNativeGpu\).*?new ImGuiRenderer\([^;]*nativeOnly:\s*true', method, re.S):
+    raise SystemExit('FAIL: native backend still requires the D3D11 initialization path')
+if 'CaptureNativeFontAtlas' not in renderer or 'if (!this.nativeOnly)' not in renderer:
+    raise SystemExit('FAIL: ImGui renderer cannot build a CPU-only native font atlas')
+resize = overlay.split('private void OnResize', 1)[1].split('private async Task InitializeResources', 1)[0]
+if not re.search(r'if\s*\(this\.useNativeGpu\).*?this\.renderer\.Resize\(width, height\).*?return;', resize, re.S):
+    raise SystemExit('FAIL: native resize can still enter the D3D11 swapchain path')
+PY
+grep -q 'DriverType.Hardware' "$CTO/Overlay.cs" || fail "Windows backend no longer requests the hardware D3D11 device"
 grep -q 'gamehelper2-gpu-overlay' "$CTO/NativeGpuProbe.cs" || fail "managed bridge does not resolve the packaged helper"
+grep -q 'InvalidateFont' "$CTO/NativeGpuProbe.cs" || fail "native font uploads cannot be invalidated after an atlas rebuild"
+grep -q 'NativeGpuProbe.InvalidateFont' "$CTO/Overlay.cs" || fail "runtime font updates keep using a stale native atlas"
 grep -q 'Path of Exile 2' "$HELPER" || fail "native compositor does not target the PoE2 window"
 grep -q 'glXCreateNewContext' "$HELPER" || fail "native compositor is not GPU-backed GLX"
 ! grep -q 'glReadPixels' "$HELPER" || fail "native compositor performs a forbidden full-frame GPU readback"

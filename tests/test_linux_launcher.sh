@@ -24,6 +24,9 @@ fi
 if [[ -n "${PROTON_PWD_FILE:-}" ]]; then
   pwd > "$PROTON_PWD_FILE"
 fi
+if [[ "${PROTON_EXIT_BEFORE_HEARTBEAT:-0}" == "1" ]]; then
+  exit "${PROTON_EARLY_EXIT_STATUS:-1}"
+fi
 if [[ "${PROTON_SPAWN_DETACHED_HELPER:-0}" == "1" ]]; then
   python3 - <<'PY'
 import os
@@ -322,6 +325,30 @@ LAUNCHER_PID=""
 for _ in {1..100}; do ! kill -0 "$helper_child" 2>/dev/null && break; sleep 0.02; done
 ! kill -0 "$helper_child" 2>/dev/null || fail "detached helper survived PoE2 shutdown cleanup"
 printf 'PASS: follows detached Wine helper after Proton wrapper exits\n'
+
+# If GameHelper crashes before publishing its first heartbeat, the short-lived
+# Proton wrapper is already gone. The launcher must not hold its session lock
+# forever while PoE2 continues running.
+rm -rf "$FIXTURE"
+FIXTURE=""
+make_fixture
+mkdir -p "$FIXTURE/proc/4545" "$FIXTURE/heartbeats"
+printf 'Z:\\games\\PathOfExileSteam.exe\0' > "$FIXTURE/proc/4545/cmdline"
+printf 'SteamAppId=2694490\0' > "$FIXTURE/proc/4545/environ"
+set +e
+GH2_PROC_ROOT="$FIXTURE/proc" GH2_HEARTBEAT_DIR="$FIXTURE/heartbeats" \
+GH2_POLL_INTERVAL=0.02 GH2_HELPER_START_LIMIT=3 \
+GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" STEAM_ROOT="$FIXTURE/steam" \
+POE2_LIBRARY="$FIXTURE/library" PROTON="$FIXTURE/proton" \
+PROTON_CALLS="$FIXTURE/proton-calls" PROTON_PID_FILE="$FIXTURE/proton-pid" \
+PROTON_EXIT_BEFORE_HEARTBEAT=1 PROTON_EARLY_EXIT_STATUS=42 \
+  timeout 1 "$LAUNCHER" >"$FIXTURE/launcher-output" 2>&1
+status=$?
+set -e
+[[ $status -eq 42 ]] || fail "launcher did not return the pre-heartbeat helper exit (status=$status): $(cat "$FIXTURE/launcher-output")"
+grep -q 'before publishing its heartbeat' "$FIXTURE/launcher-output" || \
+  fail "pre-heartbeat exit was not diagnosed: $(cat "$FIXTURE/launcher-output")"
+printf 'PASS: releases lock when helper exits before first heartbeat\n'
 
 # With no path overrides, discover a secondary Steam library and the exact
 # Proton installation referenced by PoE2's config_info.

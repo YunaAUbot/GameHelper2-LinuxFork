@@ -636,12 +636,19 @@
                 while (this.fontUpdates.TryDequeue(out var update))
                 {
                     this.renderer.UpdateFontTexture(update);
+                    if (this.useNativeGpu) NativeGpuProbe.InvalidateFont();
                 }
             }
         }
 
         private void OnResize(int width, int height)
         {
+            if (this.useNativeGpu)
+            {
+                this.renderer.Resize(width, height);
+                return;
+            }
+
             if (renderView == null)//first show
             {
                 using var dxgiFactory = device.QueryInterface<IDXGIDevice>().GetParent<IDXGIAdapter>().GetParent<IDXGIFactory>();
@@ -678,13 +685,16 @@
 
         private async Task InitializeResources()
         {
-            D3D11.D3D11CreateDevice(
-                null,
-                DriverType.Hardware,
-                DeviceCreationFlags.None,
-                new[] { FeatureLevel.Level_10_0 },
-                out this.device,
-                out this.deviceContext);
+            if (!this.useNativeGpu)
+            {
+                D3D11.D3D11CreateDevice(
+                    null,
+                    DriverType.Hardware,
+                    DeviceCreationFlags.None,
+                    new[] { FeatureLevel.Level_10_0 },
+                    out this.device,
+                    out this.deviceContext);
+            }
             this.selfPointer = Kernel32.GetModuleHandle(null);
             this.wndClass = new WNDCLASSEX
             {
@@ -716,7 +726,14 @@
                 this.title,
                 WindowStyles.WS_POPUP,
                 WindowExStyles.WS_EX_ACCEPTFILES | WindowExStyles.WS_EX_TOPMOST);
-            this.renderer = new ImGuiRenderer(device, deviceContext, this.initialWindowWidth, this.initialWindowHeight);
+            if (this.useNativeGpu)
+            {
+                this.renderer = new ImGuiRenderer(device, deviceContext, this.initialWindowWidth, this.initialWindowHeight, nativeOnly: true);
+            }
+            else
+            {
+                this.renderer = new ImGuiRenderer(device, deviceContext, this.initialWindowWidth, this.initialWindowHeight);
+            }
             this.inputhandler = new ImGuiInputHandler(this.window.Handle);
             this.overlayIsReady = true;
             await this.PostInitialized();
