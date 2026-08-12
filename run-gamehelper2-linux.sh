@@ -54,11 +54,21 @@ process_has_poe2_identity() {
   return 1
 }
 
+process_has_poe2_install_path() {
+  local pid_dir="$1" cmdline=""
+  [[ -r "$pid_dir/cmdline" ]] || return 1
+  cmdline="$(tr '\0' '\n' < "$pid_dir/cmdline" 2>/dev/null || true)"
+  cmdline="${cmdline//\\//}"
+  cmdline="${cmdline,,}"
+  [[ "$cmdline" == *"/path of exile 2/"*"pathofexile"*".exe"* ]]
+}
+
 poe2_is_running() {
   local pid_dir
   for pid_dir in "$GH2_PROC_ROOT"/[0-9]*; do
     [[ -d "$pid_dir" ]] || continue
-    if process_name_matches_poe "$pid_dir" && process_has_poe2_identity "$pid_dir"; then
+    if process_name_matches_poe "$pid_dir" &&
+       { process_has_poe2_identity "$pid_dir" || process_has_poe2_install_path "$pid_dir"; }; then
       return 0
     fi
   done

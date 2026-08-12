@@ -126,6 +126,28 @@ set -e
 
 printf 'PASS: does not confuse PoE1 with PoE2\n'
 
+# A long-running Wine process can make /proc/PID/environ inaccessible after a
+# privilege transition. The full executable path remains visible and is an
+# unambiguous fallback only when it names the PoE2 installation directory.
+rm -rf "$FIXTURE"
+FIXTURE=""
+make_fixture
+mkdir -p "$FIXTURE/proc/3181"
+printf 'S:\\steamapps\\common\\Path of Exile 2\\PathOfExileSteam.exe\0--nopatch\0' > "$FIXTURE/proc/3181/cmdline"
+: > "$FIXTURE/proc/3181/environ"
+GH2_PROC_ROOT="$FIXTURE/proc" GH2_POLL_INTERVAL=0.05 GH2_GAME_MISS_LIMIT=2 \
+GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" STEAM_ROOT="$FIXTURE/steam" \
+POE2_LIBRARY="$FIXTURE/library" PROTON="$FIXTURE/proton" \
+PROTON_CALLS="$FIXTURE/proton-calls" PROTON_PID_FILE="$FIXTURE/proton-pid" \
+  "$LAUNCHER" >"$FIXTURE/launcher-output" 2>&1 &
+LAUNCHER_PID=$!
+for _ in {1..100}; do [[ -s "$FIXTURE/proton-calls" ]] && break; sleep 0.02; done
+[[ -s "$FIXTURE/proton-calls" ]] || fail "PoE2 install-path fallback was not accepted: $(cat "$FIXTURE/launcher-output")"
+rm -rf "$FIXTURE/proc/3181"
+wait "$LAUNCHER_PID"
+LAUNCHER_PID=""
+printf 'PASS: recognizes exact PoE2 install path without readable environment identity\n'
+
 # Wine may expose a generic preloader as argv[0] and truncate the Windows name
 # in /proc/PID/comm. The Steam app identity still makes this an unambiguous PoE2
 # process.
