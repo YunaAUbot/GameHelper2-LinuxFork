@@ -47,7 +47,7 @@
         internal bool WantsKeyboardCapture()
         {
             var io = ImGui.GetIO();
-            return io.WantCaptureKeyboard || io.WantTextInput;
+            return io.WantTextInput;
         }
 
         internal void AddNativeMouseButton(int button, bool down)

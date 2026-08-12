@@ -1,6 +1,8 @@
 using System;
 using System.Reflection;
+using System.Threading;
 using ClickableTransparentOverlay;
+using ClickableTransparentOverlay.Win32;
 
 static MethodInfo Method(Type type, string name) =>
     type.GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)
@@ -34,5 +36,19 @@ if (!Bool(hasPressed, f12)) throw new InvalidOperationException("quick key tap w
 if (!Bool(hasPressed, f12)) throw new InvalidOperationException("observing a pending edge consumed it");
 if (!Bool(consumePressed, f12)) throw new InvalidOperationException("quick key tap was lost before consumption");
 if (Bool(hasPressed, f12)) throw new InvalidOperationException("consumed edge remained pending");
+
+// A native hotkey is edge-triggered. Holding F12 beyond the timeout must not
+// toggle the menu a second time; a release followed by another press must.
+reset.Invoke(null, null);
+_ = typeof(Utils).GetField("sw", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null)
+    ?? throw new InvalidOperationException("hotkey stopwatch missing");
+Thread.Sleep(5);
+Update(true);
+if (!Utils.IsKeyPressedAndNotTimeout(VK.F12, 1)) throw new InvalidOperationException("initial native hotkey edge was missed");
+Thread.Sleep(5);
+if (Utils.IsKeyPressedAndNotTimeout(VK.F12, 1)) throw new InvalidOperationException("held native hotkey repeated after timeout");
+Update(false);
+Update(true);
+if (!Utils.IsKeyPressedAndNotTimeout(VK.F12, 1)) throw new InvalidOperationException("second native hotkey edge was missed");
 
 Console.WriteLine("PASS: native key state preserves down state and pending one-shot press edges");

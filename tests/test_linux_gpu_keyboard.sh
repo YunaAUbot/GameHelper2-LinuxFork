@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="$ROOT/renderer-src/gamehelper2-gpu-overlay.c"
+INPUT_HANDLER="$ROOT/renderer-src/ClickableTransparentOverlay/ClickableTransparentOverlay/ImGuiInputHandler.cs"
 INJECTOR_SOURCE="$ROOT/tests/keyboard_injector.c"
 HELPER_BINARY="$(mktemp /tmp/gamehelper2-gpu-keyboard-helper.XXXXXX)"
 INJECTOR_BINARY="$(mktemp /tmp/gamehelper2-gpu-keyboard-injector.XXXXXX)"
@@ -16,9 +17,21 @@ cleanup() {
 trap cleanup EXIT
 
 if ! command -v Xvfb >/dev/null 2>&1 || ! ldconfig -p | grep -q 'libXtst\.so\.6'; then
-  printf 'SKIP: Xvfb and libXtst.so.6 are required for keyboard smoke\n'
-  exit 0
+    printf 'SKIP: Xvfb and libXtst.so.6 are required for keyboard smoke\n'
+    exit 0
 fi
+
+# Merely showing or navigating the settings menu must not exclusively grab
+# movement keys from PoE. Only an active text field may request that grab.
+python3 - "$INPUT_HANDLER" <<'PY'
+import re
+import sys
+from pathlib import Path
+source = Path(sys.argv[1]).read_text()
+method = re.search(r'internal bool WantsKeyboardCapture\(\)\s*\{(.*?)\n\s*\}', source, re.S)
+if not method or 'WantTextInput' not in method.group(1) or 'WantCaptureKeyboard' in method.group(1):
+    raise SystemExit('FAIL: native overlay grabs movement keys without active text input')
+PY
 
 read -r -a cflags <<< "$(pkg-config --cflags x11 xext xrender gl)"
 read -r -a libs <<< "$(pkg-config --libs x11 xext xrender gl)"

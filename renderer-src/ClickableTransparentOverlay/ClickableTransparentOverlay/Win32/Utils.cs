@@ -51,8 +51,8 @@
         public static bool IsKeyPressedAndNotTimeout(VK nVirtKey, int timeout = 200)
         {
             var nativePressed = global::ClickableTransparentOverlay.NativeKeyState.HasPressed((int)nVirtKey);
-            var actual = nativePressed ||
-                         IsKeyPressed(nVirtKey);
+            var nativeObserved = global::ClickableTransparentOverlay.NativeKeyState.HasObserved((int)nVirtKey);
+            var actual = nativeObserved ? nativePressed : IsKeyPressed(nVirtKey);
             var currTime = sw.ElapsedMilliseconds;
             if (actual && currTime > nVirtKeyTimeouts[(int)nVirtKey])
             {
