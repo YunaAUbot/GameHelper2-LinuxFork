@@ -80,6 +80,11 @@ if [[ -z "${GAMEHELPER2_EXE:-}" ]]; then
   GAMEHELPER2_EXE="${GAMEHELPER2_EXE:-$SCRIPT_DIR/GameHelper.exe}"
 fi
 GH2_POLL_INTERVAL="${GH2_POLL_INTERVAL:-1}"
+GH2_GAME_MISS_LIMIT="${GH2_GAME_MISS_LIMIT:-10}"
+[[ "$GH2_GAME_MISS_LIMIT" =~ ^[1-9][0-9]*$ ]] || {
+  echo "GH2_GAME_MISS_LIMIT must be a positive integer." >&2
+  exit 2
+}
 
 # shellcheck source=scripts/steam-proton-env.sh
 source "$SCRIPT_DIR/scripts/steam-proton-env.sh"
@@ -146,11 +151,17 @@ helper_pid=$!
 helper_pgid="$helper_pid"
 
 echo "GameHelper2 started. It will stop automatically when Path of Exile 2 exits."
+game_misses=0
 while kill -0 "$helper_pid" 2>/dev/null; do
-  if ! poe2_is_running; then
-    echo "Path of Exile 2 exited; stopping GameHelper2."
-    stop_helper
-    exit 0
+  if poe2_is_running; then
+    game_misses=0
+  else
+    (( game_misses += 1 ))
+    if (( game_misses >= GH2_GAME_MISS_LIMIT )); then
+      echo "Path of Exile 2 remained absent for $game_misses checks; stopping GameHelper2."
+      stop_helper
+      exit 0
+    fi
   fi
   sleep "$GH2_POLL_INTERVAL"
 done

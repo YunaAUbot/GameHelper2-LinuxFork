@@ -157,6 +157,7 @@ printf 'SteamAppId=2694490\0' > "$FIXTURE/proc/4242/environ"
 
 GH2_PROC_ROOT="$FIXTURE/proc" \
 GH2_POLL_INTERVAL=0.05 \
+GH2_GAME_MISS_LIMIT=2 \
 GAMEHELPER2_EXE="$FIXTURE/runtime/GameHelper.exe" \
 STEAM_ROOT="$FIXTURE/steam" \
 POE2_LIBRARY="$FIXTURE/library" \
@@ -218,6 +219,31 @@ done
   fail "TERM-resistant helper descendant survived PoE2 exit"
 
 printf 'PASS: follows a manually-started PoE2 and stops helper on game exit\n'
+
+# A transient process-list gap during Steam/Proton startup or process handoff
+# must not tear down a healthy helper. Only sustained absence is game exit.
+rm -rf "$FIXTURE"
+FIXTURE=""
+make_fixture
+mkdir -p "$FIXTURE/proc/4343"
+printf 'Z:\\games\\PathOfExileSteam.exe\0' > "$FIXTURE/proc/4343/cmdline"
+printf 'SteamAppId=2694490\0' > "$FIXTURE/proc/4343/environ"
+GH2_PROC_ROOT="$FIXTURE/proc" GH2_POLL_INTERVAL=0.05 GH2_GAME_MISS_LIMIT=3 \
+GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" STEAM_ROOT="$FIXTURE/steam" \
+POE2_LIBRARY="$FIXTURE/library" PROTON="$FIXTURE/proton" \
+PROTON_CALLS="$FIXTURE/proton-calls" PROTON_PID_FILE="$FIXTURE/proton-pid" \
+  "$LAUNCHER" >"$FIXTURE/launcher-output" 2>&1 &
+LAUNCHER_PID=$!
+for _ in {1..100}; do [[ -s "$FIXTURE/proton-calls" ]] && break; sleep 0.02; done
+[[ -s "$FIXTURE/proton-calls" ]] || fail "transient-gap helper did not start"
+mv "$FIXTURE/proc/4343" "$FIXTURE/proc/4343.hidden"
+sleep 0.07
+mv "$FIXTURE/proc/4343.hidden" "$FIXTURE/proc/4343"
+kill -0 "$LAUNCHER_PID" 2>/dev/null || fail "single PoE2 process gap stopped helper"
+rm -rf "$FIXTURE/proc/4343"
+wait "$LAUNCHER_PID"
+LAUNCHER_PID=""
+printf 'PASS: tolerates a transient PoE2 process-identity gap\n'
 
 # With no path overrides, discover a secondary Steam library and the exact
 # Proton installation referenced by PoE2's config_info.
