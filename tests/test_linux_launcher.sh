@@ -24,6 +24,30 @@ fi
 if [[ -n "${PROTON_PWD_FILE:-}" ]]; then
   pwd > "$PROTON_PWD_FILE"
 fi
+if [[ "${PROTON_SPAWN_DETACHED_HELPER:-0}" == "1" ]]; then
+  python3 - <<'PY'
+import os
+import subprocess
+script = r'''
+trap 'rm -rf "$PROTON_FAKE_PROC_ROOT/$$"; rm -f "$PROTON_FAKE_HEARTBEAT_DIR/gamehelper2-gpu-overlay-$$.alive"; exit 0' TERM INT EXIT
+mkdir -p "$PROTON_FAKE_PROC_ROOT/$$"
+printf 'GameHelper.exe\\0' > "$PROTON_FAKE_PROC_ROOT/$$/cmdline"
+printf '%s' "$EPOCHREALTIME" > "$PROTON_FAKE_HEARTBEAT_DIR/gamehelper2-gpu-overlay-$$.alive"
+printf '%s\n' "$$" > "$PROTON_CHILD_PID_FILE"
+while :; do sleep 1; done
+'''
+subprocess.Popen(
+    ["bash", "-c", script],
+    env=os.environ.copy(),
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+PY
+  for _ in {1..100}; do [[ -s "$PROTON_CHILD_PID_FILE" ]] && break; sleep 0.01; done
+  exit 0
+fi
 if [[ "${PROTON_SPAWN_TERM_RESISTANT_CHILD:-0}" == "1" ]]; then
   bash -c 'trap "" TERM INT; while :; do sleep 1; done' &
   printf '%s\n' "$!" > "${PROTON_CHILD_PID_FILE:-$PROTON_PID_FILE-child}"
@@ -244,6 +268,38 @@ rm -rf "$FIXTURE/proc/4343"
 wait "$LAUNCHER_PID"
 LAUNCHER_PID=""
 printf 'PASS: tolerates a transient PoE2 process-identity gap\n'
+
+# Proton runinprefix may return after handing GameHelper.exe to the existing
+# Wine server. The launcher must follow the PID-bound heartbeat rather than
+# treating the short-lived Proton wrapper as the helper itself.
+rm -rf "$FIXTURE"
+FIXTURE=""
+make_fixture
+mkdir -p "$FIXTURE/proc/4444" "$FIXTURE/helper-proc" "$FIXTURE/heartbeats"
+printf 'Z:\\games\\PathOfExileSteam.exe\0' > "$FIXTURE/proc/4444/cmdline"
+printf 'SteamAppId=2694490\0' > "$FIXTURE/proc/4444/environ"
+GH2_PROC_ROOT="$FIXTURE/proc" GH2_HELPER_PROC_ROOT="$FIXTURE/helper-proc" \
+GH2_HEARTBEAT_DIR="$FIXTURE/heartbeats" GH2_POLL_INTERVAL=0.05 GH2_GAME_MISS_LIMIT=2 \
+GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" STEAM_ROOT="$FIXTURE/steam" \
+POE2_LIBRARY="$FIXTURE/library" PROTON="$FIXTURE/proton" \
+PROTON_CALLS="$FIXTURE/proton-calls" PROTON_PID_FILE="$FIXTURE/proton-pid" \
+PROTON_CHILD_PID_FILE="$FIXTURE/proton-child-pid" \
+PROTON_FAKE_PROC_ROOT="$FIXTURE/helper-proc" PROTON_FAKE_HEARTBEAT_DIR="$FIXTURE/heartbeats" \
+PROTON_SPAWN_DETACHED_HELPER=1 \
+  "$LAUNCHER" >"$FIXTURE/launcher-output" 2>&1 &
+LAUNCHER_PID=$!
+for _ in {1..100}; do [[ -s "$FIXTURE/proton-child-pid" ]] && break; sleep 0.02; done
+[[ -s "$FIXTURE/proton-child-pid" ]] || fail "detached helper fixture did not start"
+sleep 0.15
+kill -0 "$LAUNCHER_PID" 2>/dev/null || fail "launcher exited with Proton wrapper while helper remained alive"
+helper_child="$(cat "$FIXTURE/proton-child-pid")"
+kill -0 "$helper_child" 2>/dev/null || fail "detached helper died with Proton wrapper"
+rm -rf "$FIXTURE/proc/4444"
+wait "$LAUNCHER_PID"
+LAUNCHER_PID=""
+for _ in {1..100}; do ! kill -0 "$helper_child" 2>/dev/null && break; sleep 0.02; done
+! kill -0 "$helper_child" 2>/dev/null || fail "detached helper survived PoE2 shutdown cleanup"
+printf 'PASS: follows detached Wine helper after Proton wrapper exits\n'
 
 # With no path overrides, discover a secondary Steam library and the exact
 # Proton installation referenced by PoE2's config_info.

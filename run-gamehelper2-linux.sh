@@ -5,6 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 GH2_PROC_ROOT="${GH2_PROC_ROOT:-/proc}"
+GH2_HELPER_PROC_ROOT="${GH2_HELPER_PROC_ROOT:-/proc}"
+GH2_HEARTBEAT_DIR="${GH2_HEARTBEAT_DIR:-/tmp}"
 POE2_APP_ID="${POE2_APP_ID:-2694490}"
 GH2_LOCK_FILE="${GH2_LOCK_FILE:-${XDG_RUNTIME_DIR:-/tmp}/gamehelper2-poe2-${UID}.lock}"
 
@@ -114,9 +116,21 @@ compat_data="$POE2_LIBRARY/steamapps/compatdata/$POE2_APP_ID"
 
 helper_pid=""
 helper_pgid=""
+helper_heartbeat=""
+helper_managed_pid=""
+
+is_own_helper_process() {
+  local pid="$1" cmdline=""
+  [[ "$pid" =~ ^[1-9][0-9]*$ && -r "$GH2_HELPER_PROC_ROOT/$pid/cmdline" ]] || return 1
+  cmdline="$(tr '\0' '\n' < "$GH2_HELPER_PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
+  [[ "$cmdline" == *"GameHelper.exe"* ]]
+}
+
 stop_helper() {
-  [[ -n "$helper_pgid" ]] || return 0
-  if kill -0 -- "-$helper_pgid" 2>/dev/null; then
+  if [[ -n "$helper_managed_pid" ]] && is_own_helper_process "$helper_managed_pid"; then
+    kill -TERM "$helper_managed_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$helper_pgid" ]] && kill -0 -- "-$helper_pgid" 2>/dev/null; then
     kill -TERM -- "-$helper_pgid" 2>/dev/null || true
     for _ in {1..10}; do
       ! kill -0 -- "-$helper_pgid" 2>/dev/null && break
@@ -129,6 +143,8 @@ stop_helper() {
   [[ -n "$helper_pid" ]] && wait "$helper_pid" 2>/dev/null || true
   helper_pid=""
   helper_pgid=""
+  helper_heartbeat=""
+  helper_managed_pid=""
 }
 trap 'stop_helper' EXIT
 trap 'exit 130' INT TERM
@@ -152,7 +168,24 @@ helper_pgid="$helper_pid"
 
 echo "GameHelper2 started. It will stop automatically when Path of Exile 2 exits."
 game_misses=0
-while kill -0 "$helper_pid" 2>/dev/null; do
+while true; do
+  if [[ -z "$helper_heartbeat" ]]; then
+    shopt -s nullglob
+    for heartbeat in "$GH2_HEARTBEAT_DIR"/gamehelper2-gpu-overlay-*.alive; do
+      candidate_pid="${heartbeat##*-}"
+      candidate_pid="${candidate_pid%.alive}"
+      if is_own_helper_process "$candidate_pid"; then
+        helper_heartbeat="$heartbeat"
+        helper_managed_pid="$candidate_pid"
+        break
+      fi
+    done
+    shopt -u nullglob
+  elif [[ ! -e "$helper_heartbeat" ]] && ! is_own_helper_process "$helper_managed_pid"; then
+    echo "GameHelper2 exited."
+    break
+  fi
+
   if poe2_is_running; then
     game_misses=0
   else
@@ -167,7 +200,7 @@ while kill -0 "$helper_pid" 2>/dev/null; do
 done
 
 set +e
-wait "$helper_pid"
+wait "$helper_pid" 2>/dev/null
 status=$?
 set -e
 stop_helper
