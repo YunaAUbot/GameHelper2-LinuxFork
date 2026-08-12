@@ -85,7 +85,9 @@ namespace ClickableTransparentOverlay
                 if (this.incomingCount != this.expectedIncoming) return false;
                 var message = this.incoming; this.expectedIncoming = -1; this.incoming = null;
                 kind = BitConverter.ToUInt32(message, 0);
-                if (kind != NativeGpuFrameProtocol.MouseInputMagic && kind != NativeGpuFrameProtocol.KeyInputMagic) return false;
+                if (kind != NativeGpuFrameProtocol.MouseInputMagic &&
+                    kind != NativeGpuFrameProtocol.KeyInputMagic &&
+                    kind != NativeGpuFrameProtocol.NativeTextureAckMagic) return false;
                 code = BitConverter.ToInt32(message, 4);
                 down = BitConverter.ToUInt32(message, 8) != 0;
                 value = BitConverter.ToUInt32(message, 12);

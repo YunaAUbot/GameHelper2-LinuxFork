@@ -9,8 +9,12 @@ namespace ClickableTransparentOverlay
     // indices and scissor rectangles), never a monitor-sized pixel buffer.
     internal static unsafe class NativeGpuFrameProtocol
     {
+        internal const int MaxNativeTextureChunkBytes = 256 * 1024;
         internal const uint FrameMagic = 0x31464745; // "EGF1"
         internal const uint FontMagic = 0x31415445; // "ETA1"
+        internal const uint NativeTextureMagic = 0x31585445; // "ETX1"
+        internal const uint NativeTextureDeleteMagic = 0x31445445; // "ETD1"
+        internal const uint NativeTextureAckMagic = 0x314B5458; // "XTK1"
         internal const uint InputModeMagic = 0x31435345; // "ESC1"
         internal const uint MouseInputMagic = 0x31494E45; // "ENI1"
         internal const uint KeyboardModeMagic = 0x314B5345; // "ESK1"
@@ -50,6 +54,34 @@ namespace ClickableTransparentOverlay
             return stream.ToArray();
         }
 
+        internal static byte[] SerializeTexture(long textureId, byte[] pixels, int width, int height, int offset)
+        {
+            if (textureId <= 1 || width <= 0 || height <= 0 || pixels.Length != checked(width * height * 4) || offset < 0 || offset >= pixels.Length)
+                throw new ArgumentException("Invalid native texture.");
+            var chunkBytes = Math.Min(MaxNativeTextureChunkBytes, pixels.Length - offset);
+            using var stream = new MemoryStream(32 + chunkBytes);
+            using var writer = new BinaryWriter(stream);
+            writer.Write(NativeTextureMagic);
+            writer.Write(textureId);
+            writer.Write(width);
+            writer.Write(height);
+            writer.Write(pixels.Length);
+            writer.Write(offset);
+            writer.Write(chunkBytes);
+            writer.Write(pixels, offset, chunkBytes);
+            return stream.ToArray();
+        }
+
+        internal static byte[] SerializeTextureDelete(long textureId)
+        {
+            if (textureId <= 1) throw new ArgumentException("Invalid native texture.");
+            using var stream = new MemoryStream(12);
+            using var writer = new BinaryWriter(stream);
+            writer.Write(NativeTextureDeleteMagic);
+            writer.Write(textureId);
+            return stream.ToArray();
+        }
+
         internal static byte[] Serialize(ImDrawDataPtr data, IntPtr fontTexture)
         {
             LastDisplaySize = (data.DisplaySize.X, data.DisplaySize.Y);
@@ -81,18 +113,15 @@ namespace ClickableTransparentOverlay
                     writer.Write(command.VtxOffset);
                     writer.Write(command.ClipRect.X); writer.Write(command.ClipRect.Y);
                     writer.Write(command.ClipRect.Z); writer.Write(command.ClipRect.W);
-                    // 1 is the transferred font atlas. GameHelper2 also uses
-                    // private 1x1 textures for coloured message backgrounds;
-                    // those cannot cross process boundaries yet, so the
-                    // native side renders them as an opaque black fallback.
-                    // This keeps white error/info text legible without a
-                    // monitor-sized readback.
+                    // 1 is the transferred font atlas, 0 is untextured, and
+                    // all larger values are bounded native texture IDs. The
+                    // native side skips an ID until its upload is accepted.
                     var texture = command.GetTexID();
-                    var textureKind = texture == fontTexture ? 1u : texture == IntPtr.Zero ? 0u : 2u;
+                    var textureKind = texture == fontTexture ? 1L : texture == IntPtr.Zero ? 0L : texture.ToInt64();
                     switch (textureKind)
                     {
-                        case 1: fontCommands++; break;
-                        case 0: untexturedCommands++; break;
+                        case 1L: fontCommands++; break;
+                        case 0L: untexturedCommands++; break;
                         default: unsupportedTextureCommands++; unsupportedTextureIds.Add(texture); break;
                     }
                     writer.Write(textureKind);

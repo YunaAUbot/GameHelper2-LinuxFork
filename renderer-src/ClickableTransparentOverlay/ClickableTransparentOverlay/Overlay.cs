@@ -547,7 +547,7 @@
                 currentTimeSec = stopwatch.ElapsedTicks / (float)Stopwatch.Frequency;
                 stopwatch.Restart();
                 this.window.PumpEvents();
-                if (this.nativeGpuStarted) NativeGpuProbe.PollInput(this.inputhandler);
+                if (this.nativeGpuStarted) NativeGpuProbe.PollInput(this.inputhandler, this.renderer);
                 if (this.nativeGpuStarted && !NativeGpuProbe.IsConnected)
                 {
                     LogRenderer("native GPU helper connection lost; closing overlay");

@@ -47,6 +47,9 @@ pid = int(sys.argv[3])
 AUTH = 0x31485541
 READY = 0x31594452
 FONT = 0x31415445
+TEXTURE = 0x31585445
+TEXTURE_DELETE = 0x31445445
+TEXTURE_ACK = 0x314B5458
 FRAME = 0x31464745
 INPUT = 0x31435345
 
@@ -65,6 +68,30 @@ def connect_retry():
 def authenticate(sock, candidate):
     payload = struct.pack("<I", AUTH) + candidate
     sock.sendall(struct.pack("<I", len(payload)) + payload)
+
+
+def recv_exact(sock, count):
+    chunks = []
+    while count:
+        chunk = sock.recv(count)
+        if not chunk:
+            raise EOFError("socket closed before texture acknowledgement")
+        chunks.append(chunk)
+        count -= len(chunk)
+    return b"".join(chunks)
+
+
+def await_texture_ack(sock, operation, texture, success):
+    sock.settimeout(2)
+    while True:
+        size = struct.unpack("<I", recv_exact(sock, 4))[0]
+        message = recv_exact(sock, size)
+        if len(message) != 20 or struct.unpack_from("<I", message)[0] != TEXTURE_ACK:
+            continue
+        _, got_operation, got_success, low, high = struct.unpack("<IIIII", message)
+        assert (got_operation, low | (high << 32), got_success) == (operation, texture, success)
+        sock.settimeout(None)
+        return
 
 
 bad = connect_retry()
@@ -102,6 +129,54 @@ client.sendall(header[2:] + payload)
 payload = struct.pack("<IIII", FONT, 0xFFFFFFFF, 2, 0)
 client.sendall(struct.pack("<I", len(payload)) + payload)
 
+# A bounded RGBA texture can be uploaded, referenced by its 64-bit logical ID,
+# deleted, and then safely ignored when a later frame still references it.
+texture_id = 2
+pixels = bytes((255, 0, 0, 255) * 4)
+def assert_no_texture_ack(sock, duration):
+    deadline = time.time() + duration
+    sock.settimeout(duration)
+    try:
+        while time.time() < deadline:
+            try:
+                size = struct.unpack("<I", recv_exact(sock, 4))[0]
+                message = recv_exact(sock, size)
+            except TimeoutError:
+                return
+            assert len(message) != 20 or struct.unpack_from("<I", message)[0] != TEXTURE_ACK
+    finally:
+        sock.settimeout(None)
+
+
+payload = struct.pack("<IQIIIII", TEXTURE, texture_id, 2, 2, len(pixels), 0, 8) + pixels[:8]
+client.sendall(struct.pack("<I", len(payload)) + payload)
+assert_no_texture_ack(client, 0.05)
+payload = struct.pack("<IQIIIII", TEXTURE, texture_id, 2, 2, len(pixels), 8, 8) + pixels[8:]
+client.sendall(struct.pack("<I", len(payload)) + payload)
+await_texture_ack(client, 1, texture_id, 1)
+
+verts = b"".join(
+    struct.pack("<ffffBBBB", x, y, u, v, 255, 255, 255, 255)
+    for x, y, u, v in ((10, 10, 0, 0), (20, 10, 1, 0), (10, 20, 0, 1))
+)
+indices = struct.pack("<HHH", 0, 1, 2)
+command = struct.pack("<IIIffffQ", 3, 0, 0, 0.0, 0.0, 800.0, 600.0, texture_id)
+payload = struct.pack("<IIIIffffIII", FRAME, 3, 3, 1, 0.0, 0.0, 800.0, 600.0, 3, 3, 1) + verts + indices + command
+client.sendall(struct.pack("<I", len(payload)) + payload)
+
+payload = struct.pack("<IQ", TEXTURE_DELETE, texture_id)
+client.sendall(struct.pack("<I", len(payload)) + payload)
+await_texture_ack(client, 2, texture_id, 1)
+# Delete is idempotent so an absent/rejected in-flight upload cannot retry forever.
+client.sendall(struct.pack("<I", len(payload)) + payload)
+await_texture_ack(client, 2, texture_id, 1)
+client.sendall(struct.pack("<I", len(payload := struct.pack("<IIIIffffIII", FRAME, 3, 3, 1, 0.0, 0.0, 800.0, 600.0, 3, 3, 1) + verts + indices + command)) + payload)
+
+# Oversized dimensions are rejected without allocating or terminating GLX.
+payload = struct.pack("<IQIIIII", TEXTURE, 3, 4097, 1, 0, 0, 0)
+client.sendall(struct.pack("<I", len(payload)) + payload)
+await_texture_ack(client, 1, 3, 0)
+
 payload = struct.pack(
     "<IIIIffff", FRAME, 0xFFFFFFFF, 0xFFFFFFFF, 0, math.nan, 0.0, 800.0, 600.0
 )
@@ -109,6 +184,24 @@ client.sendall(struct.pack("<I", len(payload)) + payload)
 time.sleep(0.15)
 os.kill(pid, 0)
 client.close()
+
+# Partial texture assembly is scoped to one authenticated connection.
+time.sleep(0.1)
+first = connect_retry()
+authenticate(first, token)
+assert first.recv(4) == struct.pack("<I", READY)
+pixels = bytes((9, 8, 7, 6) * 4)
+payload = struct.pack("<IQIIIII", TEXTURE, 4, 2, 2, len(pixels), 0, 8) + pixels[:8]
+first.sendall(struct.pack("<I", len(payload)) + payload)
+first.close()
+time.sleep(0.1)
+second = connect_retry()
+authenticate(second, token)
+assert second.recv(4) == struct.pack("<I", READY)
+payload = struct.pack("<IQIIIII", TEXTURE, 4, 2, 2, len(pixels), 8, 8) + pixels[8:]
+second.sendall(struct.pack("<I", len(payload)) + payload)
+await_texture_ack(second, 1, 4, 0)
+second.close()
 
 # A stalled partial payload is bounded to one receive timeout, not four.
 time.sleep(0.1)
@@ -144,6 +237,6 @@ final.shutdown(socket.SHUT_WR)
 time.sleep(0.2)
 assert "mode 1" in open("/tmp/gamehelper2-gpu-input.log", encoding="utf-8").read()
 final.close()
-print("PASS: native auth, split-header, malformed-font and malformed-frame smoke")
+print("PASS: native auth, texture upload/delete, split-header, and malformed payload smoke")
 PY
 ' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN"

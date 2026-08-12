@@ -35,7 +35,16 @@
         ID3D11DepthStencilState depthStencilState;
         int vertexBufferSize = 5000, indexBufferSize = 10000;
         readonly Dictionary<IntPtr, ID3D11ShaderResourceView> textureResources = new();
-        readonly HashSet<IntPtr> nativeTextureIds = new();
+        private const int MaxNativeTextureBytes = 32 * 1024 * 1024;
+        private const int MaxNativeTextureTotalBytes = 64 * 1024 * 1024;
+        private const int MaxNativeTextureWidth = 4096;
+        private const int MaxNativeTextureHeight = 8192;
+        private const int MaxNativeTextureCount = 64;
+        internal sealed record NativeTexture(IntPtr Id, byte[] Pixels, int Width, int Height, bool Sent, bool InFlight, int UploadOffset);
+        readonly Dictionary<IntPtr, NativeTexture> nativeTextures = new();
+        readonly HashSet<long> nativeTextureDeletes = new();
+        readonly HashSet<long> nativeTextureDeletesInFlight = new();
+        private int nativeTextureBytes;
         private readonly bool nativeOnly;
         private long nextNativeTextureId = 1;
         private byte[] nativeFontPixels = Array.Empty<byte>();
@@ -45,6 +54,36 @@
 
         internal (byte[] Pixels, int Width, int Height, IntPtr TextureId) GetNativeFontAtlas() =>
             (this.nativeFontPixels, this.nativeFontWidth, this.nativeFontHeight, this.nativeFontTextureId);
+
+        internal NativeTexture[] GetPendingNativeTextures() =>
+            this.nativeTextures.Values.Where(texture => !texture.Sent && !texture.InFlight)
+                .OrderByDescending(texture => texture.UploadOffset).ThenBy(texture => texture.Id.ToInt64()).ToArray();
+
+        internal void MarkNativeTextureChunkSent(IntPtr id, int chunkBytes)
+        {
+            if (this.nativeTextures.TryGetValue(id, out var texture))
+            {
+                var offset = checked(texture.UploadOffset + chunkBytes);
+                this.nativeTextures[id] = texture with { UploadOffset = offset, InFlight = offset == texture.Pixels.Length };
+            }
+        }
+
+        internal void AcknowledgeNativeTexture(IntPtr id, bool success)
+        {
+            if (this.nativeTextures.TryGetValue(id, out var texture))
+                this.nativeTextures[id] = texture with { Sent = success, InFlight = false, UploadOffset = success ? texture.Pixels.Length : 0 };
+        }
+
+        internal long[] GetPendingNativeTextureDeletes() =>
+            this.nativeTextureDeletes.Where(id => !this.nativeTextureDeletesInFlight.Contains(id)).ToArray();
+
+        internal void MarkNativeTextureDeleteInFlight(long id) => this.nativeTextureDeletesInFlight.Add(id);
+
+        internal void AcknowledgeNativeTextureDelete(long id, bool success)
+        {
+            this.nativeTextureDeletesInFlight.Remove(id);
+            if (success) this.nativeTextureDeletes.Remove(id);
+        }
 
         public ImGuiRenderer(ID3D11Device device, ID3D11DeviceContext deviceContext, int width, int height, bool nativeOnly = false)
         {
@@ -203,7 +242,10 @@
         {
             if (device == null)
             {
-                this.nativeTextureIds.Clear();
+                this.nativeTextures.Clear();
+                this.nativeTextureDeletes.Clear();
+                this.nativeTextureDeletesInFlight.Clear();
+                this.nativeTextureBytes = 0;
                 this.nativeFontPixels = Array.Empty<byte>();
                 this.nativeFontWidth = 0;
                 this.nativeFontHeight = 0;
@@ -235,8 +277,19 @@
         {
             if (this.nativeOnly)
             {
+                if (image.Width <= 0 || image.Height <= 0 || image.Width > MaxNativeTextureWidth || image.Height > MaxNativeTextureHeight)
+                    throw new ArgumentOutOfRangeException(nameof(image), "Native texture dimensions exceed limits.");
+                if (this.nativeTextures.Count >= MaxNativeTextureCount)
+                    throw new InvalidOperationException("Native texture count exceeded.");
+                var bytes = checked(image.Width * image.Height * 4);
+                if (bytes > MaxNativeTextureBytes || this.nativeTextureBytes > MaxNativeTextureTotalBytes - bytes)
+                    throw new InvalidOperationException("Native texture budget exceeded.");
+                if (!image.DangerousTryGetSinglePixelMemory(out Memory<Rgba32> nativeMemory))
+                    throw new Exception("Make sure to initialize MemoryAllocator.Default!");
+                var pixels = System.Runtime.InteropServices.MemoryMarshal.AsBytes(nativeMemory.Span).ToArray();
                 var handle = new IntPtr(++this.nextNativeTextureId);
-                this.nativeTextureIds.Add(handle);
+                this.nativeTextures.Add(handle, new NativeTexture(handle, pixels, image.Width, image.Height, false, false, 0));
+                this.nativeTextureBytes += bytes;
                 return handle;
             }
 
@@ -257,7 +310,10 @@
         {
             if (this.nativeOnly)
             {
-                return this.nativeTextureIds.Remove(handle);
+                if (!this.nativeTextures.Remove(handle, out var texture)) return false;
+                this.nativeTextureBytes -= texture.Pixels.Length;
+                if (texture.Sent || texture.InFlight || texture.UploadOffset > 0) this.nativeTextureDeletes.Add(handle.ToInt64());
+                return true;
             }
 
             using var tex = this.DeRegisterTexture(handle);

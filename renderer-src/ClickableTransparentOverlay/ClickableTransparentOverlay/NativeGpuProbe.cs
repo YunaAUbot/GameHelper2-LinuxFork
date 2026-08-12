@@ -76,6 +76,19 @@ namespace ClickableTransparentOverlay
                     if (transport.TrySend(NativeGpuFrameProtocol.SerializeFont(font.Pixels, font.Width, font.Height))) fontSent = true;
                     else return;
                 }
+                foreach (var textureId in renderer.GetPendingNativeTextureDeletes())
+                {
+                    if (!transport.TrySend(NativeGpuFrameProtocol.SerializeTextureDelete(textureId))) return;
+                    renderer.MarkNativeTextureDeleteInFlight(textureId);
+                }
+                var pendingTextures = renderer.GetPendingNativeTextures();
+                if (pendingTextures.Length > 0)
+                {
+                    var texture = pendingTextures[0];
+                    var message = NativeGpuFrameProtocol.SerializeTexture(texture.Id.ToInt64(), texture.Pixels, texture.Width, texture.Height, texture.UploadOffset);
+                    if (!transport.TrySend(message)) return;
+                    renderer.MarkNativeTextureChunkSent(texture.Id, message.Length - 32);
+                }
                 transport.TrySend(NativeGpuFrameProtocol.Serialize(drawData, font.TextureId));
             }
             catch { fontSent = false; }
@@ -93,13 +106,20 @@ namespace ClickableTransparentOverlay
             if (transport.TrySend(NativeGpuFrameProtocol.SerializeKeyboardMode(wantsInput))) keyboardCapture = wantsInput;
         }
 
-        internal static void PollInput(ImGuiInputHandler input)
+        internal static void PollInput(ImGuiInputHandler input, ImGuiRenderer renderer)
         {
             while (transport is not null && transport.TryReadEvent(out var kind, out var code, out var down, out var value, out var value2))
             {
                 if (kind == NativeGpuFrameProtocol.KeyInputMagic)
                 {
                     input.AddNativeKey((uint)code, down, value);
+                    continue;
+                }
+                if (kind == NativeGpuFrameProtocol.NativeTextureAckMagic)
+                {
+                    var textureId = (long)value | ((long)value2 << 32);
+                    if (code == 1) renderer.AcknowledgeNativeTexture(new IntPtr(textureId), down);
+                    else if (code == 2) renderer.AcknowledgeNativeTextureDelete(textureId, down);
                     continue;
                 }
                 input.AddNativeMousePosition(BitConverter.Int32BitsToSingle((int)value), BitConverter.Int32BitsToSingle((int)value2));

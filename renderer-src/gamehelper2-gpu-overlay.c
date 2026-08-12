@@ -29,6 +29,9 @@
  * it works with the GLX implementation Proton already exposes. */
 #define FRAME_MAGIC 0x31464745u /* EGF1, little endian */
 #define FONT_MAGIC  0x31415445u /* ETA1, little endian */
+#define TEXTURE_MAGIC 0x31585445u /* ETX1, little endian */
+#define TEXTURE_DELETE_MAGIC 0x31445445u /* ETD1, little endian */
+#define TEXTURE_ACK_MAGIC 0x314B5458u /* XTK1, little endian */
 #define INPUT_MODE_MAGIC 0x31435345u
 #define MOUSE_INPUT_MAGIC 0x31494e45u
 #define KEY_INPUT_MAGIC 0x314b4e45u
@@ -39,6 +42,11 @@
 #define MAX_OVERLAY_DIMENSION 32767
 #define MIN_OVERLAY_POSITION (-32768)
 #define MAX_OVERLAY_POSITION 32767
+#define MAX_TEXTURE_WIDTH 4096u
+#define MAX_TEXTURE_HEIGHT 8192u
+#define MAX_TEXTURE_BYTES (32u * 1024u * 1024u)
+#define MAX_TEXTURE_TOTAL_BYTES (64u * 1024u * 1024u)
+#define MAX_TEXTURE_COUNT 64u
 #define KEYBOARD_RETRY_SECONDS 0.25
 static double now_seconds(void) { struct timespec v; clock_gettime(CLOCK_MONOTONIC, &v); return v.tv_sec + v.tv_nsec / 1e9; }
 static double wall_seconds(void) { struct timespec v; clock_gettime(CLOCK_REALTIME, &v); return v.tv_sec + v.tv_nsec / 1e9; }
@@ -51,6 +59,7 @@ static void trace_renderer(void) {
     if(f){fprintf(f,"%.3f pid=%ld vendor=%s renderer=%s version=%s\n",now_seconds(),(long)getpid(),vendor?vendor:"unknown",renderer?renderer:"unknown",version?version:"unknown");fclose(f);}
 }
 static uint32_t u32(const unsigned char **p) { uint32_t v; memcpy(&v,*p,4); *p+=4; return v; }
+static uint64_t u64(const unsigned char **p) { uint64_t v; memcpy(&v,*p,8); *p+=8; return v; }
 static float f32(const unsigned char **p) { float v; memcpy(&v,*p,4); *p+=4; return v; }
 static int multiply_size(size_t a,size_t b,size_t*out){if(a&&b>SIZE_MAX/a)return 0;*out=a*b;return 1;}
 static int valid_dimensions(int width, int height) { return width>0&&height>0&&width<=MAX_OVERLAY_DIMENSION&&height<=MAX_OVERLAY_DIMENSION; }
@@ -97,6 +106,10 @@ static void send_key(int fd, KeySym key, int down, uint32_t codepoint) {
     uint32_t msg[6] = { 20, KEY_INPUT_MAGIC, (uint32_t)key, (uint32_t)down, codepoint, 0 };
     (void)write_exact(fd, msg, sizeof msg);
 }
+static int send_texture_ack(int fd, uint32_t operation, int success, uint64_t id) {
+    uint32_t msg[6] = { 20, TEXTURE_ACK_MAGIC, operation, success ? 1u : 0u, (uint32_t)id, (uint32_t)(id >> 32) };
+    return write_exact(fd, msg, sizeof msg);
+}
 struct keyboard_capture { int requested; int active; double retry_at; unsigned char down[256]; };
 static void release_keyboard(Display *d, int fd, struct keyboard_capture *state) {
     if(state->active) {
@@ -129,6 +142,33 @@ static void close_client(Display *d, int *fd, struct keyboard_capture *keyboard)
 }
 static int passive_grab_error;
 static int record_passive_grab_error(Display *d, XErrorEvent *event) { (void)d; passive_grab_error=event->error_code; return 0; }
+
+struct native_texture { uint64_t id; GLuint gl; size_t bytes; struct native_texture *next; };
+struct native_textures { struct native_texture *head; size_t bytes; unsigned count; };
+struct native_texture_upload { uint64_t id; uint32_t width,height,total,received; unsigned char *pixels; };
+static void reset_texture_upload(struct native_texture_upload *upload) { free(upload->pixels);memset(upload,0,sizeof *upload); }
+static void close_texture_client(Display *d, int *fd, struct keyboard_capture *keyboard, struct native_texture_upload *upload) { close_client(d,fd,keyboard);reset_texture_upload(upload); }
+static struct native_texture *find_texture(struct native_textures *textures, uint64_t id) {
+    for(struct native_texture *item=textures->head;item;item=item->next)if(item->id==id)return item;
+    return NULL;
+}
+static int upload_texture(struct native_textures *textures, uint64_t id, uint32_t width, uint32_t height, uint32_t bytes, const unsigned char *pixels) {
+    if(id<=1||width==0||height==0||width>MAX_TEXTURE_WIDTH||height>MAX_TEXTURE_HEIGHT||
+       width>UINT32_MAX/height||width*height>UINT32_MAX/4u||bytes!=width*height*4u||bytes>MAX_TEXTURE_BYTES)return 0;
+    struct native_texture *item=find_texture(textures,id); size_t old=item?item->bytes:0;
+    if((!item&&textures->count>=MAX_TEXTURE_COUNT)||textures->bytes-old>MAX_TEXTURE_TOTAL_BYTES-bytes)return 0;
+    GLuint replacement=0;while(glGetError()!=GL_NO_ERROR){}glGenTextures(1,&replacement);if(!replacement||glGetError()!=GL_NO_ERROR)return 0;
+    glBindTexture(GL_TEXTURE_2D,replacement);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);glPixelStorei(GL_UNPACK_ALIGNMENT,1);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,(GLsizei)width,(GLsizei)height,0,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+    if(glGetError()!=GL_NO_ERROR){glDeleteTextures(1,&replacement);return 0;}
+    if(!item){item=calloc(1,sizeof *item);if(!item){glDeleteTextures(1,&replacement);return 0;}item->id=id;item->next=textures->head;textures->head=item;textures->count++;}
+    else glDeleteTextures(1,&item->gl);
+    item->gl=replacement;textures->bytes=textures->bytes-old+bytes;item->bytes=bytes;return 1;
+}
+static int delete_texture(struct native_textures *textures, uint64_t id) {
+    struct native_texture **link=&textures->head;
+    while(*link){struct native_texture *item=*link;if(item->id==id){*link=item->next;textures->bytes-=item->bytes;textures->count--;glDeleteTextures(1,&item->gl);free(item);return 1;}link=&item->next;}return 0;
+}
+static void delete_all_textures(struct native_textures *textures) { while(textures->head)delete_texture(textures,textures->head->id); }
 /* MotionNotify is only generated while the pointer is already inside the
  * current ShapeInput region.  Query the X server once per compositor cycle as
  * the authoritative position source instead, so ImGui can correctly retain
@@ -184,7 +224,7 @@ static void add_input_triangle(Region region, const unsigned char *verts, uint32
     XUnionRectWithRegion(&rect, region, region);
 }
 
-static void draw_frame(Display *d, Window window, const unsigned char *p, size_t bytes, int width, int height, GLuint font) {
+static void draw_frame(Display *d, Window window, const unsigned char *p, size_t bytes, int width, int height, GLuint font, struct native_textures *textures) {
     const unsigned char *end=p+bytes; Region input_region=XCreateRegion(); int valid=0;
     if(!input_region)return;
     if(bytes<32 || u32(&p)!=FRAME_MAGIC)goto cleanup;
@@ -199,15 +239,17 @@ static void draw_frame(Display *d, Window window, const unsigned char *p, size_t
     for(uint32_t li=0;li<lists;li++) {
         if((size_t)(end-p)<12) goto cleanup;
         uint32_t nv=u32(&p), ni=u32(&p), nc=u32(&p);
-        size_t vb,ib;if(!multiply_size(nv,20u,&vb)||!multiply_size(ni,2u,&ib)||nc>((size_t)(end-p)/32u))goto cleanup;
+        size_t vb,ib;if(!multiply_size(nv,20u,&vb)||!multiply_size(ni,2u,&ib)||nc>((size_t)(end-p)/36u))goto cleanup;
         if(vb>SIZE_MAX-ib||(size_t)(end-p)<vb+ib)goto cleanup;
         seen_v+=nv;seen_i+=ni;if(seen_v>totalv||seen_i>totali)goto cleanup;
         const unsigned char *verts=p; p+=vb; const uint16_t *idx=(const uint16_t*)p; p+=ib;
         for(uint32_t ci=0;ci<nc;ci++) {
-            if((size_t)(end-p)<32) goto cleanup;
-            uint32_t elems=u32(&p), offset=u32(&p), voffset=u32(&p); float x1=f32(&p),y1=f32(&p),x2=f32(&p),y2=f32(&p); uint32_t textured=u32(&p);
+            if((size_t)(end-p)<36) goto cleanup;
+            uint32_t elems=u32(&p), offset=u32(&p), voffset=u32(&p); float x1=f32(&p),y1=f32(&p),x2=f32(&p),y2=f32(&p); uint64_t texture_id=u64(&p);
             if(offset>ni||elems>ni-offset||voffset>nv||!isfinite(x1)||!isfinite(y1)||!isfinite(x2)||!isfinite(y2)||x2<x1||y2<y1||x1-display_x<INT_MIN||x2-display_x>INT_MAX||y1-display_y<INT_MIN||y2-display_y>INT_MAX)goto cleanup;
             for(uint32_t i=0;i<elems;i++)if((uint32_t)idx[offset+i]>=nv-voffset)goto cleanup;
+            struct native_texture *texture=texture_id>1?find_texture(textures,texture_id):NULL;
+            if(texture_id>1&&!texture)continue;
             for (uint32_t i = 0; i + 2 < elems; i += 3) {
                 add_input_triangle(input_region, verts, nv,
                     (uint32_t)idx[offset+i] + voffset, (uint32_t)idx[offset+i+1] + voffset,
@@ -220,9 +262,11 @@ static void draw_frame(Display *d, Window window, const unsigned char *p, size_t
             if(sy2>height)sy2=(float)height;
             if(sx2<=sx1||sy2<=sy1)continue;
             glEnable(GL_SCISSOR_TEST); glScissor((int)sx1,height-(int)sy2,(int)(sx2-sx1),(int)(sy2-sy1));
-            if(textured==1) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D,font); } else glDisable(GL_TEXTURE_2D);
+            if(texture_id==1) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D,font); }
+            else if(texture) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D,texture->gl); }
+            else glDisable(GL_TEXTURE_2D);
             glBegin(GL_TRIANGLES);
-            for(uint32_t i=0;i<elems;i++) { uint32_t n=(uint32_t)idx[offset+i]+voffset; if(n>=nv)continue; const unsigned char *v=verts+n*20; float px,py,ux,uy; memcpy(&px,v,4);memcpy(&py,v+4,4);memcpy(&ux,v+8,4);memcpy(&uy,v+12,4); if(textured==2) glColor4ub(0,0,0,v[19]); else glColor4ub(v[16],v[17],v[18],v[19]); glTexCoord2f(ux,uy); glVertex2f(px,py); }
+            for(uint32_t i=0;i<elems;i++) { uint32_t n=(uint32_t)idx[offset+i]+voffset; if(n>=nv)continue; const unsigned char *v=verts+n*20; float px,py,ux,uy; memcpy(&px,v,4);memcpy(&py,v+4,4);memcpy(&ux,v+8,4);memcpy(&uy,v+12,4); glColor4ub(v[16],v[17],v[18],v[19]); glTexCoord2f(ux,uy); glVertex2f(px,py); }
             glEnd();
         }
     }
@@ -266,7 +310,7 @@ int main(int argc,char **argv) {
     int se,er;if(XShapeQueryExtension(d,&se,&er))set_input(d,w,width,height,0);
     GLXContext ctx=glXCreateNewContext(d,cfg,GLX_RGBA_TYPE,NULL,True);if(!ctx||!glXMakeCurrent(d,w,ctx)){fputs("gpu: GLX failed\n",stderr);return 5;}trace_renderer();GLuint font;glGenTextures(1,&font);glBindTexture(GL_TEXTURE_2D,font);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     int listener=socket(AF_INET,SOCK_STREAM,0), client=-1,yes=1;setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);fcntl(listener,F_SETFL,fcntl(listener,F_GETFL,0)|O_NONBLOCK);struct sockaddr_in addr;memset(&addr,0,sizeof addr);addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);addr.sin_port=htons(port);if(bind(listener,(struct sockaddr*)&addr,sizeof addr)||listen(listener,1)){perror("gpu bind");return 6;}double started=now_seconds();
-    int input_mode=0; struct keyboard_capture keyboard={0}; double last_valid_heartbeat=wall_seconds();
+    int input_mode=0; struct keyboard_capture keyboard={0}; struct native_textures textures={0}; struct native_texture_upload texture_upload={0}; double last_valid_heartbeat=wall_seconds();
     while(now_seconds()-started<duration) {
         double heartbeat_now=wall_seconds();
         double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
@@ -301,19 +345,19 @@ int main(int argc,char **argv) {
         if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token))close_client(d,&client,&keyboard);else XMapRaised(d,w);} usleep(1000); continue; }
         struct pollfd client_poll={.fd=client,.events=POLLIN,.revents=0};
         int poll_result=poll(&client_poll,1,50);
-        if(poll_result<0){if(errno==EINTR)continue;close_client(d,&client,&keyboard);continue;}
+        if(poll_result<0){if(errno==EINTR)continue;close_texture_client(d,&client,&keyboard,&texture_upload);continue;}
         if(poll_result==0)continue;
         if(!(client_poll.revents&POLLIN)){
-            if(client_poll.revents&(POLLERR|POLLHUP|POLLNVAL))close_client(d,&client,&keyboard);
+            if(client_poll.revents&(POLLERR|POLLHUP|POLLNVAL))close_texture_client(d,&client,&keyboard,&texture_upload);
             continue;
         }
         uint32_t len; int rr=read_exact(client,&len,4);
-        if(rr==0) { close_client(d,&client,&keyboard); continue; }
-        if(rr<0) { close_client(d,&client,&keyboard); continue; }
-        if(len<4||len>64*1024*1024) { close_client(d,&client,&keyboard); continue; }
+        if(rr==0) { close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
+        if(rr<0) { close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
+        if(len<4||len>64*1024*1024) { close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
         unsigned char *buf=malloc(len); if(!buf) break;
         rr=read_exact(client,buf,len);
-        if(rr<=0) { free(buf); close_client(d,&client,&keyboard); continue; }
+        if(rr<=0) { free(buf); close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
         if(rr>0) {
             const unsigned char*p=buf;
             if(len>=4) {
@@ -321,14 +365,22 @@ int main(int argc,char **argv) {
                 if(magic==FONT_MAGIC&&len>=16) {
                     uint32_t fw=u32(&p),fh=u32(&p),bl=u32(&p);
                     if(fw>0&&fh>0&&fw<=UINT32_MAX/fh&&fw*fh<=UINT32_MAX/4u&&bl==fw*fh*4u&&bl==(uint32_t)(len-16)) { glBindTexture(GL_TEXTURE_2D,font); glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,fw,fh,0,GL_RGBA,GL_UNSIGNED_BYTE,p); }
-                } else if(len==8&&magic==INPUT_MODE_MAGIC) set_input(d,w,width,height,u32(&p)!=0);
+                } else if(magic==TEXTURE_MAGIC&&len>=32) {
+                    uint64_t id=u64(&p);uint32_t tw=u32(&p),th=u32(&p),total=u32(&p),offset=u32(&p),chunk=u32(&p);int accepted=0,finished=0;
+                    int valid=id>1&&tw>0&&th>0&&tw<=MAX_TEXTURE_WIDTH&&th<=MAX_TEXTURE_HEIGHT&&tw<=UINT32_MAX/th&&tw*th<=UINT32_MAX/4u&&total==tw*th*4u&&total<=MAX_TEXTURE_BYTES&&chunk>0&&chunk<=256u*1024u&&chunk==(uint32_t)(len-32)&&offset<=total&&chunk<=total-offset;
+                    if(valid&&offset==0){reset_texture_upload(&texture_upload);texture_upload.pixels=malloc(total);if(texture_upload.pixels){texture_upload.id=id;texture_upload.width=tw;texture_upload.height=th;texture_upload.total=total;}}
+                    if(valid&&texture_upload.pixels&&texture_upload.id==id&&texture_upload.width==tw&&texture_upload.height==th&&texture_upload.total==total&&texture_upload.received==offset){memcpy(texture_upload.pixels+offset,p,chunk);texture_upload.received+=chunk;accepted=1;finished=texture_upload.received==total;}
+                    if(finished){accepted=upload_texture(&textures,id,tw,th,total,texture_upload.pixels);reset_texture_upload(&texture_upload);if(!send_texture_ack(client,1,accepted,id))close_texture_client(d,&client,&keyboard,&texture_upload);}
+                    else if(!accepted){reset_texture_upload(&texture_upload);if(!send_texture_ack(client,1,0,id))close_texture_client(d,&client,&keyboard,&texture_upload);}
+                } else if(magic==TEXTURE_DELETE_MAGIC&&len==12) { uint64_t id=u64(&p);int success=id>1;if(success){if(texture_upload.id==id)reset_texture_upload(&texture_upload);(void)delete_texture(&textures,id);}if(!send_texture_ack(client,2,success,id))close_texture_client(d,&client,&keyboard,&texture_upload); }
+                else if(len==8&&magic==INPUT_MODE_MAGIC) set_input(d,w,width,height,u32(&p)!=0);
                 else if(len==8&&magic==KEYBOARD_MODE_MAGIC) request_keyboard(d,w,client,&keyboard,u32(&p)!=0);
-                else draw_frame(d,w,buf,len,width,height,font);
+                else draw_frame(d,w,buf,len,width,height,font,&textures);
             }
         }
         free(buf);
     }
-    close_client(d,&client,&keyboard);
+    close_texture_client(d,&client,&keyboard,&texture_upload);delete_all_textures(&textures);
     if(f12_keycode!=0) XUngrabKey(d,f12_keycode,AnyModifier,RootWindow(d,screen));
     close(listener);glDeleteTextures(1,&font);glXMakeCurrent(d,None,NULL);glXDestroyContext(d,ctx);XDestroyWindow(d,w);XFree(vi);XFree(cfgs);XCloseDisplay(d);return 0;
 }
