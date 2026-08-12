@@ -6,6 +6,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 GH2_PROC_ROOT="${GH2_PROC_ROOT:-/proc}"
 POE2_APP_ID="${POE2_APP_ID:-2694490}"
+GH2_LOCK_FILE="${GH2_LOCK_FILE:-${XDG_RUNTIME_DIR:-/tmp}/gamehelper2-poe2-${UID}.lock}"
+
+exec 9>"$GH2_LOCK_FILE"
+if ! flock -n 9; then
+  echo "GameHelper2 is already running for this desktop session." >&2
+  exit 9
+fi
 
 normalize_process_name() {
   local value="$1"

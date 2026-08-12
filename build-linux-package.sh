@@ -8,7 +8,7 @@ configuration=Release
 framework=net10.0-windows
 runtime=win-x64
 build_output="$repo_root/GameHelper/bin/$configuration/$framework/$runtime"
-passive_plugins=(PreloadAlert Radar HealthBars Atlas2 PlayerBuffBar DevBridge)
+passive_plugins=(PreloadAlert Radar HealthBars Atlas2 PlayerBuffBar)
 
 [[ $# -le 1 ]] || { printf 'usage: %s [output-directory]\n' "$0" >&2; exit 2; }
 [[ "$output" = /* ]] || output="$PWD/$output"

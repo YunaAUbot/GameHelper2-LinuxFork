@@ -34,6 +34,8 @@ EOF
   chmod +x "$FIXTURE/proton"
   : > "$FIXTURE/GameHelper.exe"
   : > "$FIXTURE/proton-calls"
+  GH2_LOCK_FILE="$FIXTURE/gamehelper.lock"
+  export GH2_LOCK_FILE
 }
 
 cleanup() {
@@ -318,3 +320,36 @@ LAUNCHER_PID=""
 [[ $status -eq 0 ]] || fail "developer-checkout launch returned $status"
 
 printf 'PASS: selects developer Release output automatically\n'
+
+# A second starter must fail closed instead of creating a second helper in the
+# same live Wine/Proton session.
+rm -rf "$FIXTURE"
+FIXTURE=""
+make_fixture
+mkdir -p "$FIXTURE/proc/7373"
+printf 'Z:\\games\\PathOfExileSteam.exe\0' > "$FIXTURE/proc/7373/cmdline"
+printf 'SteamAppId=2694490\0' > "$FIXTURE/proc/7373/environ"
+GH2_PROC_ROOT="$FIXTURE/proc" GH2_POLL_INTERVAL=0.05 \
+GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" STEAM_ROOT="$FIXTURE/steam" \
+POE2_LIBRARY="$FIXTURE/library" PROTON="$FIXTURE/proton" \
+PROTON_CALLS="$FIXTURE/proton-calls" PROTON_PID_FILE="$FIXTURE/proton-pid" \
+  "$LAUNCHER" >"$FIXTURE/launcher-output" 2>&1 &
+LAUNCHER_PID=$!
+for _ in {1..100}; do
+  [[ -s "$FIXTURE/proton-calls" ]] && break
+  sleep 0.02
+done
+[[ -s "$FIXTURE/proton-calls" ]] || fail "first launcher did not start"
+set +e
+second_output="$(GH2_PROC_ROOT="$FIXTURE/proc" GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" \
+  STEAM_ROOT="$FIXTURE/steam" POE2_LIBRARY="$FIXTURE/library" PROTON="$FIXTURE/proton" \
+  PROTON_CALLS="$FIXTURE/proton-calls" "$LAUNCHER" 2>&1)"
+second_status=$?
+set -e
+[[ $second_status -eq 9 ]] || fail "second launcher returned $second_status"
+[[ "$second_output" == *"already running"* ]] || fail "missing duplicate-start message: $second_output"
+[[ "$(wc -l < "$FIXTURE/proton-calls")" -eq 1 ]] || fail "second helper was started"
+rm -rf "$FIXTURE/proc/7373"
+wait "$LAUNCHER_PID"
+LAUNCHER_PID=""
+printf 'PASS: refuses a second helper in the same session\n'
