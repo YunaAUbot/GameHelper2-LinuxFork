@@ -266,12 +266,14 @@ int main(int argc,char **argv) {
     int se,er;if(XShapeQueryExtension(d,&se,&er))set_input(d,w,width,height,0);
     GLXContext ctx=glXCreateNewContext(d,cfg,GLX_RGBA_TYPE,NULL,True);if(!ctx||!glXMakeCurrent(d,w,ctx)){fputs("gpu: GLX failed\n",stderr);return 5;}trace_renderer();GLuint font;glGenTextures(1,&font);glBindTexture(GL_TEXTURE_2D,font);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     int listener=socket(AF_INET,SOCK_STREAM,0), client=-1,yes=1;setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);fcntl(listener,F_SETFL,fcntl(listener,F_GETFL,0)|O_NONBLOCK);struct sockaddr_in addr;memset(&addr,0,sizeof addr);addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);addr.sin_port=htons(port);if(bind(listener,(struct sockaddr*)&addr,sizeof addr)||listen(listener,1)){perror("gpu bind");return 6;}double started=now_seconds();
-    int input_mode=0; struct keyboard_capture keyboard={0};
+    int input_mode=0; struct keyboard_capture keyboard={0}; double last_valid_heartbeat=wall_seconds();
     while(now_seconds()-started<duration) {
-        struct stat hb;
-        if(stat(argv[6],&hb)) break;
+        double heartbeat_now=wall_seconds();
         double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
-        if(heartbeat_timestamp<=0||wall_seconds()-heartbeat_timestamp>3) break;
+        if(heartbeat_timestamp>0) {
+            if(heartbeat_now-heartbeat_timestamp>3) break;
+            last_valid_heartbeat=heartbeat_now;
+        } else if(heartbeat_now-last_valid_heartbeat>3) break;
         int heartbeat_x=x,heartbeat_y=y,heartbeat_width=width,heartbeat_height=height;
         int requested=heartbeat_state(argv[6],&heartbeat_x,&heartbeat_y,&heartbeat_width,&heartbeat_height);
         if(!valid_geometry(heartbeat_x,heartbeat_y,heartbeat_width,heartbeat_height)){heartbeat_x=x;heartbeat_y=y;heartbeat_width=width;heartbeat_height=height;requested=0;}

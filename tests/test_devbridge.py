@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -56,6 +57,9 @@ class DevBridgeMcpTests(unittest.TestCase):
         self.assertEqual(request["root"], "player")
         self.assertEqual(request["requestId"], "abc-123")
         self.assertEqual(result["requestId"], "abc-123")
+        mode = (self.root / "snapshot-request.json").stat().st_mode
+        self.assertTrue(mode & stat.S_IRGRP)
+        self.assertTrue(mode & stat.S_IWGRP)
         with self.assertRaises(ValueError):
             self.store.request_snapshot("ui", "second")
         (self.root / "snapshot-request.json").unlink()

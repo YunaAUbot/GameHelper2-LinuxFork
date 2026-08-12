@@ -110,7 +110,8 @@ class BridgeStore:
         temporary_name = f".{target.name}.{secrets.token_hex(16)}.tmp"
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory)
+            descriptor = os.open(temporary_name, flags, 0o660, dir_fd=directory)
+            os.fchmod(descriptor, 0o660)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 stream.write(payload)
                 stream.flush()
