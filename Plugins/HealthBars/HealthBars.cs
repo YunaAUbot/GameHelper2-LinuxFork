@@ -44,6 +44,11 @@ namespace HealthBars
 
         private readonly Dictionary<uint, Vector2> bPositions = new();
 
+        private readonly bool nativeGpu = string.Equals(
+            Environment.GetEnvironmentVariable("GAMEHELPER2_OVERLAY_BACKEND"),
+            "native-gpu",
+            StringComparison.OrdinalIgnoreCase);
+
         private ActiveCoroutine? onAreaChange = null;
 
         /// <inheritdoc />
@@ -339,26 +344,46 @@ namespace HealthBars
             // Ward behaves like Life (only lost once HP hits 1), so fold it into the health
             // bar: a 50 Life / 50 Ward entity reads as a single 100-health pool.
             var hPercent = CombinedHealthPercent(hComp);
-            ptr.AddImage(hb_ptr, start, end - (Vector2.UnitX * healthbarConfig.Scale * (100 - hPercent) / 100f), Vector2.Zero, Vector2.One,
-                (hPercent > this.Settings.CullingStrikeRangePerRarity[rarity] || !healthbarConfig.ShowCullStrike) ?
+            var healthEnd = end - (Vector2.UnitX * healthbarConfig.Scale * (100 - hPercent) / 100f);
+            var healthColor = (hPercent > this.Settings.CullingStrikeRangePerRarity[rarity] || !healthbarConfig.ShowCullStrike) ?
                 ImGuiHelper.Color(healthbarConfig.HealthbarColor) :
-                0xFFFFFFFF);
+                0xFFFFFFFF;
+            if (this.nativeGpu)
+            {
+                ptr.AddRectFilled(start, healthEnd, healthColor);
+            }
+            else
+            {
+                ptr.AddImage(hb_ptr, start, healthEnd, Vector2.Zero, Vector2.One, healthColor);
+            }
 
             if (isSelf && this.Settings.ShowManaRatherThanESOnSelf)
             {
                 var (es_ptr, _, _) = this.textures.GetTexture(this.textureToValidate[1]);
-                ptr.AddImage(es_ptr, start, end - (Vector2.UnitX * healthbarConfig.Scale * (100 - hComp.Mana.CurrentInPercent()) / 100f),
-                    Vector2.Zero, Vector2.One,
-                    ImGuiHelper.Color(healthbarConfig.ESColor));
+                var manaEnd = end - (Vector2.UnitX * healthbarConfig.Scale * (100 - hComp.Mana.CurrentInPercent()) / 100f);
+                if (this.nativeGpu)
+                {
+                    ptr.AddRectFilled(start, manaEnd, ImGuiHelper.Color(healthbarConfig.ESColor));
+                }
+                else
+                {
+                    ptr.AddImage(es_ptr, start, manaEnd, Vector2.Zero, Vector2.One, ImGuiHelper.Color(healthbarConfig.ESColor));
+                }
             }
             else
             {
                 if (hComp.EnergyShield.Total > 0)
                 {
                     var (es_ptr, _, _) = this.textures.GetTexture(this.textureToValidate[1]);
-                    ptr.AddImage(es_ptr, start, end - (Vector2.UnitX * healthbarConfig.Scale * (100 - hComp.EnergyShield.CurrentInPercent()) / 100f),
-                        Vector2.Zero, Vector2.One,
-                        ImGuiHelper.Color(healthbarConfig.ESColor));
+                    var esEnd = end - (Vector2.UnitX * healthbarConfig.Scale * (100 - hComp.EnergyShield.CurrentInPercent()) / 100f);
+                    if (this.nativeGpu)
+                    {
+                        ptr.AddRectFilled(start, esEnd, ImGuiHelper.Color(healthbarConfig.ESColor));
+                    }
+                    else
+                    {
+                        ptr.AddImage(es_ptr, start, esEnd, Vector2.Zero, Vector2.One, ImGuiHelper.Color(healthbarConfig.ESColor));
+                    }
                 }
             }
 
