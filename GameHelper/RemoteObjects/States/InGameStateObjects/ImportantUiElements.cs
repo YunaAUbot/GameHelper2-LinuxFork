@@ -94,6 +94,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
 
         private readonly UiElementParents rootCache;
         private readonly UiElementParents passiveSkillTreeCache;
+        private readonly UiElementParents atlasCache;
         private readonly List<AtlasMapNode> atlasMaps = new();
         private readonly List<AtlasRegionButton> atlasOceanButtons = new();
         private readonly List<PlayerMarker> atlasMarkers = new();
@@ -132,6 +133,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
         {
             this.rootCache = new(null, GameStateTypes.InGameState, GameStateTypes.EscapeState, "Root");
             this.passiveSkillTreeCache = new(this.rootCache, GameStateTypes.InGameState, GameStateTypes.EscapeState, "PassiveSkillTree");
+            this.atlasCache = new(this.rootCache, GameStateTypes.InGameState, GameStateTypes.EscapeState, "Atlas");
 
             this.passiveskilltreenodes = new(IntPtr.Zero, this.rootCache);
             this.sekhemasTrialMapPanel = new(IntPtr.Zero, this.rootCache);
@@ -143,7 +145,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
             this.Act3 = new(IntPtr.Zero, this.rootCache);
             this.Act4 = new(IntPtr.Zero, this.rootCache);
             this.Interlude = new(IntPtr.Zero, this.rootCache);
-            this.Atlas = new(IntPtr.Zero, this.rootCache);
+            this.Atlas = new(IntPtr.Zero, this.atlasCache);
             this.AtlasSkillsPanel = new(IntPtr.Zero, this.rootCache);
             this.TempleConsole = new(IntPtr.Zero, this.rootCache);
             this.CurrencyExchangePanel = new(IntPtr.Zero, this.rootCache);
@@ -447,6 +449,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
             this.RightPanel.Address = IntPtr.Zero;
             this.ChatParent.Address = IntPtr.Zero;
             this.atlasMaps.Clear();
+            this.atlasCache.Clear();
             this.atlasMapCacheFrameCounter = int.MaxValue;
             this.cachedAtlasMapCount = -1;
             this.SkillTreeNodesUiElements.Clear();
@@ -526,6 +529,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                 this.atlasMaps.Clear();
                 this.atlasOceanButtons.Clear();
                 this.atlasMarkers.Clear();
+                this.atlasCache.Clear();
                 this.cachedAtlasMapCount = -1;
                 this.atlasMapCacheFrameCounter = int.MaxValue;
                 return;
@@ -1030,12 +1034,21 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
         {
             this.rootCache.ToImGui();
             this.passiveSkillTreeCache.ToImGui();
+            this.atlasCache.ToImGui();
         }
 
         private void UpdateParentsCache()
         {
             this.rootCache.UpdateAllParentsParallel();
             this.passiveSkillTreeCache.UpdateAllParentsParallel();
+            if (this.Atlas.IsVisible)
+            {
+                this.atlasCache.UpdateAllParentsParallel();
+            }
+            else
+            {
+                this.atlasCache.Clear();
+            }
         }
 
         private IEnumerator<Wait> OnPerFrame()
