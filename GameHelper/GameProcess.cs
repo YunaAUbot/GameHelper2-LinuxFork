@@ -26,6 +26,10 @@ namespace GameHelper
     /// </summary>
     public class GameProcess
     {
+        private static readonly bool TolerateMissingWindowHandle = string.Equals(
+            Environment.GetEnvironmentVariable("GAMEHELPER2_OVERLAY_BACKEND"),
+            "native-gpu",
+            StringComparison.OrdinalIgnoreCase);
         private readonly List<Process> processesInfo = new();
         private int clientSelected = -1;
         private bool showSelectGameMenu = false;
@@ -276,16 +280,17 @@ namespace GameHelper
                 bool shouldClose = false;
                 try
                 {
-                    // Have to check MainWindowHandle because
-                    // sometime HasExited returns false even when game isn't running..
-                    if (this.Information == null ||
-                        this.Information.HasExited ||
-                        this.Information.MainWindowHandle.ToInt64() <= 0x00 ||
-                        this.closeForcefully)
-                    {
-                        shouldClose = true;
-                    }
-                    else
+                    Process? information = this.Information;
+                    var informationMissing = information == null;
+                    var processExited = information?.HasExited ?? false;
+                    var mainWindowHandle = information?.MainWindowHandle.ToInt64() ?? 0;
+                    shouldClose = GameProcessLiveness.ShouldClose(
+                        informationMissing,
+                        processExited,
+                        mainWindowHandle,
+                        this.closeForcefully,
+                        TolerateMissingWindowHandle);
+                    if (!shouldClose && mainWindowHandle > 0)
                     {
                         this.UpdateIsForeground();
                         this.UpdateWindowRectangle();
