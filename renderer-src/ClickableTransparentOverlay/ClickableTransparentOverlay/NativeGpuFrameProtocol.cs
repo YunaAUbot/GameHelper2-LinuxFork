@@ -19,10 +19,16 @@ namespace ClickableTransparentOverlay
         internal const uint MouseInputMagic = 0x31494E45; // "ENI1"
         internal const uint KeyboardModeMagic = 0x314B5345; // "ESK1"
         internal const uint KeyInputMagic = 0x314B4E45; // "ENK1"
+        internal const uint ShutdownMagic = 0x31545845; // "EXT1"
         internal const uint AuthMagic = 0x31485541; // "AUH1"
         internal const uint ReadyMagic = 0x31594452; // "RDY1"
         internal static (float Width, float Height) LastDisplaySize { get; private set; }
         internal static (int FontCommands, int UntexturedCommands, int UnsupportedTextureCommands, int UnsupportedTextureIds) LastTextureStats { get; private set; }
+
+        internal static byte[] SerializeShutdown()
+        {
+            return BitConverter.GetBytes(ShutdownMagic);
+        }
 
         internal static byte[] SerializeInputMode(bool interactive)
         {

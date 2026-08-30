@@ -27,6 +27,8 @@ require 'EAGAIN.*EWOULDBLOCK|EWOULDBLOCK.*EAGAIN' "$HELPER" 'native reads do not
 require 'RandomNumberGenerator' "$CTO/NativeGpuProbe.cs" 'managed launch token is not cryptographically random'
 require 'WaitForReady' "$CTO/NativeGpuProbe.cs" 'managed probe does not wait for authenticated readiness'
 require 'IsConnected' "$CTO/NativeGpuProbe.cs" 'managed probe has no helper connection watchdog'
+require 'SerializeShutdown' "$CTO/NativeGpuProbe.cs" 'managed stop does not request authenticated native shutdown'
+require '"-1 0 0 0 0 0' "$CTO/NativeGpuProbe.cs" 'managed stop has no disconnected heartbeat fallback'
 require 'SendTimeout' "$CTO/NativeGpuTransport.cs" 'managed sends have no bounded timeout'
 require 'ReceiveTimeout' "$CTO/NativeGpuTransport.cs" 'managed receives have no bounded timeout'
 require 'MouseInputMagic' "$CTO/NativeGpuTransport.cs" 'managed transport does not accept native mouse events'

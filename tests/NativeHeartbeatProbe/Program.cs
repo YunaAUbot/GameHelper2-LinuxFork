@@ -11,6 +11,15 @@ using System.Threading.Tasks;
 using ClickableTransparentOverlay;
 
 var assembly = typeof(Overlay).Assembly;
+var frameProtocolType = assembly.GetType("ClickableTransparentOverlay.NativeGpuFrameProtocol")
+    ?? throw new InvalidOperationException("NativeGpuFrameProtocol missing");
+var serializeShutdown = frameProtocolType.GetMethod("SerializeShutdown", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuFrameProtocol.SerializeShutdown missing");
+var shutdownPayload = (byte[])(serializeShutdown.Invoke(null, null)
+    ?? throw new InvalidOperationException("native shutdown payload missing"));
+if (shutdownPayload.Length != 4 || BitConverter.ToUInt32(shutdownPayload, 0) != 0x31545845u)
+    throw new InvalidOperationException("native shutdown payload is not the authenticated EXT1 control message");
+
 var framePacingType = assembly.GetType("ClickableTransparentOverlay.NativeGpuFramePacing")
     ?? throw new InvalidOperationException("NativeGpuFramePacing missing");
 var resolveFrameLimit = framePacingType.GetMethod("ResolveFrameLimit", BindingFlags.Static | BindingFlags.NonPublic)

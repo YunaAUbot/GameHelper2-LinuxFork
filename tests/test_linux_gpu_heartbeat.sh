@@ -88,6 +88,17 @@ os.kill(pid, 0)
 client.close()
 time.sleep(2)
 os.kill(pid, 0)
+with open(heartbeat, "w", encoding="utf-8") as stream:
+    stream.write("-1 0 0 0 0 0\n")
+deadline = time.time() + 0.5
+while time.time() < deadline:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.01)
+else:
+    raise AssertionError("explicit stop heartbeat did not bypass reconnect grace")
 PY
 ' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN" || fail "authenticated reconnect grace did not retain the compositor"
 

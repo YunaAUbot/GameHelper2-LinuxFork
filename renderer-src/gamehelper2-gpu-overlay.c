@@ -36,6 +36,7 @@
 #define MOUSE_INPUT_MAGIC 0x31494e45u
 #define KEY_INPUT_MAGIC 0x314b4e45u
 #define KEYBOARD_MODE_MAGIC 0x314b5345u
+#define SHUTDOWN_MAGIC 0x31545845u /* EXT1, authenticated deliberate exit */
 #define AUTH_MAGIC 0x31485541u
 #define READY_MAGIC 0x31594452u
 #define AUTH_TOKEN_BYTES 32u
@@ -185,7 +186,7 @@ static void send_pointer_position(Display *d, Window w, int fd) {
     if (fd >= 0 && XQueryPointer(d, w, &root, &child, &root_x, &root_y, &win_x, &win_y, &mask))
         send_mouse(fd, -1, 0, win_x, win_y);
 }
-static double heartbeat_timestamp_seconds(const char *path) { FILE *f=fopen(path,"r"); long long stamp=0; if(f){if(fscanf(f,"%lld",&stamp)!=1)stamp=0;fclose(f);} return stamp>0?(double)stamp/1000.0:0.0; }
+static double heartbeat_timestamp_seconds(const char *path) { FILE *f=fopen(path,"r"); long long stamp=0; if(f){if(fscanf(f,"%lld",&stamp)!=1)stamp=0;fclose(f);} return stamp<0?-1.0:(stamp>0?(double)stamp/1000.0:0.0); }
 static int heartbeat_state(const char *path, int *x, int *y, int *width, int *height) { FILE *f=fopen(path,"r"); long long stamp=0; int mode=0; if(f){if(fscanf(f,"%lld %d %d %d %d %d",&stamp,&mode,x,y,width,height)!=6)mode=0;fclose(f);} (void)stamp; return mode!=0; }
 /* Make only large, solid ImGui primitives receptive to input.  Dear ImGui
  * emits the menu/window background as two large filled triangles; text-only
@@ -316,11 +317,12 @@ int main(int argc,char **argv) {
     int se,er;if(XShapeQueryExtension(d,&se,&er))set_input(d,w,width,height,0);
     GLXContext ctx=glXCreateNewContext(d,cfg,GLX_RGBA_TYPE,NULL,True);if(!ctx||!glXMakeCurrent(d,w,ctx)){fputs("gpu: GLX failed\n",stderr);return 5;}trace_renderer();GLuint font;glGenTextures(1,&font);glBindTexture(GL_TEXTURE_2D,font);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     int listener=socket(AF_INET,SOCK_STREAM,0), client=-1,yes=1;setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);fcntl(listener,F_SETFL,fcntl(listener,F_GETFL,0)|O_NONBLOCK);struct sockaddr_in addr;memset(&addr,0,sizeof addr);addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);addr.sin_port=htons(port);if(bind(listener,(struct sockaddr*)&addr,sizeof addr)||listen(listener,1)){perror("gpu bind");return 6;}double started=now_seconds();
-    int input_mode=0; struct keyboard_capture keyboard={0}; struct native_textures textures={0}; struct native_texture_upload texture_upload={0}; double last_valid_heartbeat=wall_seconds(),last_client_seen=0;
-    while(now_seconds()-started<duration) {
+    int input_mode=0,shutdown_requested=0; struct keyboard_capture keyboard={0}; struct native_textures textures={0}; struct native_texture_upload texture_upload={0}; double last_valid_heartbeat=wall_seconds(),last_client_seen=0;
+    while(!shutdown_requested&&now_seconds()-started<duration) {
         double loop_now=now_seconds();if(client>=0)last_client_seen=loop_now;if(client<0&&input_mode){input_mode=0;set_input(d,w,width,height,0);}int reconnect_grace=last_client_seen>0&&loop_now-last_client_seen<=AUTHENTICATED_RECONNECT_GRACE_SECONDS;
         double heartbeat_now=wall_seconds();
         double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
+        if(heartbeat_timestamp<0) { trace_renderer_event("explicit-stop",0,client); break; }
         if(heartbeat_timestamp>0) {
             if(heartbeat_now-heartbeat_timestamp>3 && client<0 && !reconnect_grace) { trace_renderer_event("stale-heartbeat",heartbeat_now-heartbeat_timestamp,client); break; }
             last_valid_heartbeat=heartbeat_now;
@@ -368,7 +370,8 @@ int main(int argc,char **argv) {
             const unsigned char*p=buf;
             if(len>=4) {
                 uint32_t magic=u32(&p);
-                if(magic==FONT_MAGIC&&len>=16) {
+                if(len==4&&magic==SHUTDOWN_MAGIC) { free(buf); shutdown_requested=1; break; }
+                else if(magic==FONT_MAGIC&&len>=16) {
                     uint32_t fw=u32(&p),fh=u32(&p),bl=u32(&p);
                     if(fw>0&&fh>0&&fw<=UINT32_MAX/fh&&fw*fh<=UINT32_MAX/4u&&bl==fw*fh*4u&&bl==(uint32_t)(len-16)) { glBindTexture(GL_TEXTURE_2D,font); glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,fw,fh,0,GL_RGBA,GL_UNSIGNED_BYTE,p); }
                 } else if(magic==TEXTURE_MAGIC&&len>=32) {

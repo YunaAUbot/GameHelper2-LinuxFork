@@ -52,6 +52,7 @@ TEXTURE_DELETE = 0x31445445
 TEXTURE_ACK = 0x314B5458
 FRAME = 0x31464745
 INPUT = 0x31435345
+SHUTDOWN = 0x31545845
 
 
 def connect_retry():
@@ -251,6 +252,25 @@ final.shutdown(socket.SHUT_WR)
 time.sleep(0.2)
 assert "mode 1" in open("/tmp/gamehelper2-gpu-input.log", encoding="utf-8").read()
 final.close()
-print("PASS: native auth, texture upload/delete, split-header, and malformed payload smoke")
+
+# A deliberate authenticated shutdown must remove the native window promptly;
+# reconnect grace is only for accidental transport loss.
+time.sleep(0.1)
+stop_client = connect_retry()
+authenticate(stop_client, token)
+assert stop_client.recv(4) == struct.pack("<I", READY)
+payload = struct.pack("<I", SHUTDOWN)
+stop_client.sendall(struct.pack("<I", len(payload)) + payload)
+stop_client.close()
+deadline = time.time() + 0.5
+while time.time() < deadline:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.01)
+else:
+    raise AssertionError("authenticated shutdown left the native overlay visible")
+print("PASS: native auth, texture lifecycle, reconnect, and prompt shutdown smoke")
 PY
 ' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN"
