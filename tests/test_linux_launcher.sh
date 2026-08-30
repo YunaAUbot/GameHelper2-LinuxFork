@@ -267,8 +267,8 @@ grep -qx 'backend=native-gpu' "$FIXTURE/proton-env" || \
   fail "native GPU backend was not selected: $(cat "$FIXTURE/proton-env")"
 grep -qx 'wined3d=1' "$FIXTURE/proton-env" || \
   fail "helper-only WineD3D default was not selected: $(cat "$FIXTURE/proton-env")"
-grep -qx 'native_fps=30' "$FIXTURE/proton-env" || \
-  fail "native overlay FPS limit was not passed to GameHelper: $(cat "$FIXTURE/proton-env")"
+grep -qx 'native_fps=20' "$FIXTURE/proton-env" || \
+  fail "native GPU performance-safe default was not forwarded: $(cat "$FIXTURE/proton-env")"
 
 rm -rf "$FIXTURE/proc/4242"
 for _ in {1..100}; do

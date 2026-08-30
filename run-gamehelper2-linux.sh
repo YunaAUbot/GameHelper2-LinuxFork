@@ -95,7 +95,7 @@ GH2_POLL_INTERVAL="${GH2_POLL_INTERVAL:-1}"
 GH2_GAME_MISS_LIMIT="${GH2_GAME_MISS_LIMIT:-10}"
 GH2_HELPER_START_LIMIT="${GH2_HELPER_START_LIMIT:-10}"
 # This limits only GameHelper2's native overlay/data loop; it never changes PoE2's frame rate.
-GAMEHELPER2_NATIVE_FPS_LIMIT="${GAMEHELPER2_NATIVE_FPS_LIMIT:-30}"
+GAMEHELPER2_NATIVE_FPS_LIMIT="${GAMEHELPER2_NATIVE_FPS_LIMIT:-20}"
 [[ "$GH2_GAME_MISS_LIMIT" =~ ^[1-9][0-9]*$ ]] || {
   echo "GH2_GAME_MISS_LIMIT must be a positive integer." >&2
   exit 2
