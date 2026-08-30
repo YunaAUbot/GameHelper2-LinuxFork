@@ -346,22 +346,22 @@ int main(int argc,char **argv) {
                 trace_input("mouse",button,down); send_mouse(client,button,down,e.xbutton.x,e.xbutton.y);
             }
         }
-        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token))close_client(d,&client,&keyboard);else XMapRaised(d,w);} usleep(1000); continue; }
+        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token)){trace_renderer_event("client-auth-failed",0,client);close_client(d,&client,&keyboard);}else XMapRaised(d,w);} usleep(1000); continue; }
         struct pollfd client_poll={.fd=client,.events=POLLIN,.revents=0};
         int poll_result=poll(&client_poll,1,50);
-        if(poll_result<0){if(errno==EINTR)continue;close_texture_client(d,&client,&keyboard,&texture_upload);continue;}
+        if(poll_result<0){if(errno==EINTR)continue;trace_renderer_event("client-poll-error",0,client);close_texture_client(d,&client,&keyboard,&texture_upload);continue;}
         if(poll_result==0)continue;
         if(!(client_poll.revents&POLLIN)){
-            if(client_poll.revents&(POLLERR|POLLHUP|POLLNVAL))close_texture_client(d,&client,&keyboard,&texture_upload);
+            if(client_poll.revents&(POLLERR|POLLHUP|POLLNVAL)){trace_renderer_event("client-poll-hup",0,client);close_texture_client(d,&client,&keyboard,&texture_upload);}
             continue;
         }
         uint32_t len; int rr=read_exact(client,&len,4);
-        if(rr==0) { close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
-        if(rr<0) { close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
-        if(len<4||len>64*1024*1024) { close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
+        if(rr==0) { trace_renderer_event("client-header-eof",0,client); close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
+        if(rr<0) { trace_renderer_event("client-header-timeout",0,client); close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
+        if(len<4||len>64*1024*1024) { trace_renderer_event("client-invalid-length",0,client); close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
         unsigned char *buf=malloc(len); if(!buf) break;
         rr=read_exact(client,buf,len);
-        if(rr<=0) { free(buf); close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
+        if(rr<=0) { trace_renderer_event("client-payload-timeout",0,client); free(buf); close_texture_client(d,&client,&keyboard,&texture_upload); continue; }
         if(rr>0) {
             const unsigned char*p=buf;
             if(len>=4) {

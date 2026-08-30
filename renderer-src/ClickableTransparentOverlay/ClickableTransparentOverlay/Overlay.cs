@@ -216,6 +216,8 @@
         /// </summary>
         public virtual void Close()
         {
+            var diagnostic = OverlayCloseDiagnostics.CaptureOnce("Close called");
+            if (diagnostic != null) LogRenderer(diagnostic);
             this.cancellationTokenSource.Cancel();
         }
 

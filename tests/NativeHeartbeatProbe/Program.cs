@@ -8,6 +8,16 @@ using System.Threading.Tasks;
 using ClickableTransparentOverlay;
 
 var assembly = typeof(Overlay).Assembly;
+var closeDiagnosticsType = assembly.GetType("ClickableTransparentOverlay.OverlayCloseDiagnostics")
+    ?? throw new InvalidOperationException("OverlayCloseDiagnostics missing");
+var captureClose = closeDiagnosticsType.GetMethod("CaptureOnce", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("OverlayCloseDiagnostics.CaptureOnce missing");
+var firstClose = captureClose.Invoke(null, new object[] { "probe" }) as string;
+if (firstClose == null || !firstClose.Contains("reason=probe", StringComparison.Ordinal) || !firstClose.Contains("stack=", StringComparison.Ordinal))
+    throw new InvalidOperationException("first overlay close did not capture its reason and stack");
+if (captureClose.Invoke(null, new object[] { "duplicate" }) != null)
+    throw new InvalidOperationException("duplicate overlay close diagnostics were not suppressed");
+
 var windowLifecycleType = assembly.GetType("ClickableTransparentOverlay.NativeWindowLifecycle")
     ?? throw new InvalidOperationException("NativeWindowLifecycle missing");
 var shouldCloseOnDestroy = windowLifecycleType.GetMethod("ShouldCloseOnDestroy", BindingFlags.Static | BindingFlags.NonPublic)
