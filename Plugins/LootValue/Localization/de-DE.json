@@ -1,6 +1,5 @@
 {
   "plugin.description": "Zeigt Marktwerte für Boden-, Truhen- und Inventargegenstände an.",
-  "button.refresh_prices_now": "Jetzt Preise aktualisieren",
   "currency.chaos": "Chaos",
   "currency.divine": "Göttlich",
   "currency.exalted": "Erhaben",
@@ -14,7 +13,6 @@
   "diagnostics.summary.pricing": "priced={0} BelowFloor(<{1}ex)={2} would draw={3}",
   "diagnostics.window_title": "LootValue-Diagnose",
   "section.display": "Anzeige",
-  "section.price_source": "Preisquelle",
   "settings.anchor_to_loot_tags": "Anker für Beuteetiketten (keine Überlappung, wenn sich Gegenstände stapeln)",
   "settings.diagnostics_window": "Diagnosefenster",
   "settings.font_size": "Schriftgröße",
@@ -24,16 +22,12 @@
   "settings.highlight_from": "Highlight von (ex)",
   "settings.hide_when_game_unfocused": "Werte ausblenden, wenn das Spiel nicht im Vordergrund ist",
   "settings.jitter_filter": "Jitter-Filter (geringer = stärker, keine Verzögerung)",
-  "settings.league": "Liga",
   "settings.min_value_to_show": "Mindestwert, der angezeigt werden soll (z. B.)",
-  "settings.refresh_interval": "Aktualisierungsintervall (Min.)",
   "settings.rescan_interval": "Rescan-Intervall (ms)",
   "settings.rescan_interval.tooltip": "Positionen zeichnen jeden Frame neu; Beim erneuten Scannen werden nur Artikel/Preise erneut erkannt.",
   "settings.reveal_unidentified_uniques": "Unbekannte Unikate enthüllen (durch Kunst)",
   "settings.show_overlay": "Zeigen Sie Wert gegenüber Bodengegenständen an",
   "settings.smooth_label_motion": "Reibungslose Etikettenbewegung (Geschwindigkeitsverfolgung)",
   "settings.text_color": "Textfarbe",
-  "settings.vertical_offset": "Vertikaler Versatz",
-  "status.loaded_items": "{0} Artikel | Vor {1} Min",
-  "status.loading": "Laden..."
+  "settings.vertical_offset": "Vertikaler Versatz"
 }
