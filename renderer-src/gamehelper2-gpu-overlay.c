@@ -48,6 +48,7 @@
 #define MAX_TEXTURE_TOTAL_BYTES (64u * 1024u * 1024u)
 #define MAX_TEXTURE_COUNT 64u
 #define KEYBOARD_RETRY_SECONDS 0.25
+#define AUTHENTICATED_RECONNECT_GRACE_SECONDS 300.0
 static double now_seconds(void) { struct timespec v; clock_gettime(CLOCK_MONOTONIC, &v); return v.tv_sec + v.tv_nsec / 1e9; }
 static double wall_seconds(void) { struct timespec v; clock_gettime(CLOCK_REALTIME, &v); return v.tv_sec + v.tv_nsec / 1e9; }
 static void trace_input(const char *event, int a, int b) { FILE *f=fopen("/tmp/gamehelper2-gpu-input.log","a"); if(f){fprintf(f,"%.3f %s %d %d\n",now_seconds(),event,a,b);fclose(f);} }
@@ -314,14 +315,15 @@ int main(int argc,char **argv) {
     int se,er;if(XShapeQueryExtension(d,&se,&er))set_input(d,w,width,height,0);
     GLXContext ctx=glXCreateNewContext(d,cfg,GLX_RGBA_TYPE,NULL,True);if(!ctx||!glXMakeCurrent(d,w,ctx)){fputs("gpu: GLX failed\n",stderr);return 5;}trace_renderer();GLuint font;glGenTextures(1,&font);glBindTexture(GL_TEXTURE_2D,font);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     int listener=socket(AF_INET,SOCK_STREAM,0), client=-1,yes=1;setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);fcntl(listener,F_SETFL,fcntl(listener,F_GETFL,0)|O_NONBLOCK);struct sockaddr_in addr;memset(&addr,0,sizeof addr);addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);addr.sin_port=htons(port);if(bind(listener,(struct sockaddr*)&addr,sizeof addr)||listen(listener,1)){perror("gpu bind");return 6;}double started=now_seconds();
-    int input_mode=0; struct keyboard_capture keyboard={0}; struct native_textures textures={0}; struct native_texture_upload texture_upload={0}; double last_valid_heartbeat=wall_seconds();
+    int input_mode=0; struct keyboard_capture keyboard={0}; struct native_textures textures={0}; struct native_texture_upload texture_upload={0}; double last_valid_heartbeat=wall_seconds(),last_client_seen=0;
     while(now_seconds()-started<duration) {
+        double loop_now=now_seconds();if(client>=0)last_client_seen=loop_now;int reconnect_grace=last_client_seen>0&&loop_now-last_client_seen<=AUTHENTICATED_RECONNECT_GRACE_SECONDS;
         double heartbeat_now=wall_seconds();
         double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
         if(heartbeat_timestamp>0) {
-            if(heartbeat_now-heartbeat_timestamp>3 && client<0) { trace_renderer_event("stale-heartbeat",heartbeat_now-heartbeat_timestamp,client); break; }
+            if(heartbeat_now-heartbeat_timestamp>3 && client<0 && !reconnect_grace) { trace_renderer_event("stale-heartbeat",heartbeat_now-heartbeat_timestamp,client); break; }
             last_valid_heartbeat=heartbeat_now;
-        } else if(heartbeat_now-last_valid_heartbeat>3 && client<0) { trace_renderer_event("missing-heartbeat",heartbeat_now-last_valid_heartbeat,client); break; }
+        } else if(heartbeat_now-last_valid_heartbeat>3 && client<0 && !reconnect_grace) { trace_renderer_event("missing-heartbeat",heartbeat_now-last_valid_heartbeat,client); break; }
         int heartbeat_x=x,heartbeat_y=y,heartbeat_width=width,heartbeat_height=height;
         int requested=heartbeat_state(argv[6],&heartbeat_x,&heartbeat_y,&heartbeat_width,&heartbeat_height);
         if(!valid_geometry(heartbeat_x,heartbeat_y,heartbeat_width,heartbeat_height)){heartbeat_x=x;heartbeat_y=y;heartbeat_width=width;heartbeat_height=height;requested=0;}
@@ -346,7 +348,7 @@ int main(int argc,char **argv) {
                 trace_input("mouse",button,down); send_mouse(client,button,down,e.xbutton.x,e.xbutton.y);
             }
         }
-        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token)){trace_renderer_event("client-auth-failed",0,client);close_client(d,&client,&keyboard);}else{struct timeval no_receive_timeout={0};setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&no_receive_timeout,sizeof no_receive_timeout);XMapRaised(d,w);}} usleep(1000); continue; }
+        if(client<0) { client=accept(listener,NULL,NULL); if(client>=0){struct timeval timeout={.tv_sec=1,.tv_usec=0};fcntl(client,F_SETFL,fcntl(client,F_GETFL,0)&~O_NONBLOCK);setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof timeout);setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof timeout);if(!authenticate_client(client,auth_token)){trace_renderer_event("client-auth-failed",0,client);close_client(d,&client,&keyboard);}else XMapRaised(d,w);} usleep(1000); continue; }
         struct pollfd client_poll={.fd=client,.events=POLLIN,.revents=0};
         int poll_result=poll(&client_poll,1,50);
         if(poll_result<0){if(errno==EINTR)continue;trace_renderer_event("client-poll-error",0,client);close_texture_client(d,&client,&keyboard,&texture_upload);continue;}

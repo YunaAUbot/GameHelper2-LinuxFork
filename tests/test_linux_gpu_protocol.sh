@@ -204,8 +204,8 @@ await_texture_ack(second, 1, 4, 0)
 second.close()
 
 # A suspended authenticated sender may stop halfway through one bounded payload.
-# Preserve the partial frame until the same live connection resumes instead of
-# tearing down the entire overlay after the ordinary one-second socket timeout.
+# Drop only that TCP connection, keep the compositor alive, and accept a newly
+# authenticated stream whose first frame has an unambiguous boundary.
 time.sleep(0.1)
 partial = connect_retry()
 authenticate(partial, token)
@@ -213,11 +213,30 @@ assert partial.recv(4) == struct.pack("<I", READY)
 payload = struct.pack("<II", INPUT, 1)
 partial.sendall(struct.pack("<I", len(payload)) + payload[:2])
 time.sleep(1.2)
+partial.settimeout(0.1)
+closed = False
+for _ in range(20):
+    try:
+        if partial.recv(4096) == b"":
+            closed = True
+            break
+    except ConnectionResetError:
+        closed = True
+        break
+    except TimeoutError:
+        pass
+    time.sleep(0.02)
+partial.close()
+assert closed
 os.kill(pid, 0)
-partial.sendall(payload[2:])
+
+resumed = connect_retry()
+authenticate(resumed, token)
+assert resumed.recv(4) == struct.pack("<I", READY)
+resumed.sendall(struct.pack("<I", len(payload)) + payload)
 time.sleep(0.2)
 assert "mode 1" in open("/tmp/gamehelper2-gpu-input.log", encoding="utf-8").read()
-partial.close()
+resumed.close()
 os.kill(pid, 0)
 
 # POLLIN and POLLHUP may arrive together. Drain the final complete message

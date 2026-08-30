@@ -135,6 +135,15 @@ namespace ClickableTransparentOverlay
 
         internal static bool IsConnected => transport?.IsConnected == true;
 
+        internal static void PrepareReconnect(ImGuiInputHandler input, ImGuiRenderer renderer)
+        {
+            interactive = null;
+            keyboardCapture = null;
+            fontSent = false;
+            input.ResetNativeInput();
+            renderer.ResetNativeTransferStateForReconnect();
+        }
+
         internal static void Stop()
         {
             transport?.Dispose(); transport = null; fontSent = false; interactive = null; keyboardCapture = null; menuInput = false;

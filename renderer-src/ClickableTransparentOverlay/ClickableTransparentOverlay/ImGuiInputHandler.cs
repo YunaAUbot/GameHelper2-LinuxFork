@@ -73,6 +73,15 @@
             if (down && codepoint != 0) io.AddInputCharacter(codepoint);
         }
 
+        internal void ResetNativeInput()
+        {
+            var io = ImGui.GetIO();
+            io.ClearInputKeys();
+            for (var button = 0; button < 5; button++) io.AddMouseButtonEvent(button, false);
+            this.hasNativeMousePosition = false;
+            NativeKeyState.Reset();
+        }
+
         public bool ProcessMessage(WindowMessage msg, UIntPtr wParam, IntPtr lParam)
         {
             if (ImGui.GetCurrentContext() == IntPtr.Zero)

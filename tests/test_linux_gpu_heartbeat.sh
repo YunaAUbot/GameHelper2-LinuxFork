@@ -86,16 +86,11 @@ with open(heartbeat, "w", encoding="utf-8") as stream:
 time.sleep(3.5)
 os.kill(pid, 0)
 client.close()
-deadline = time.time() + 2
-while time.time() < deadline:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        break
-    time.sleep(0.02)
-else:
-    raise AssertionError("native compositor survived a closed owner connection with a stale heartbeat")
+time.sleep(2)
+os.kill(pid, 0)
 PY
-' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN" || fail "authenticated idle owner was not distinguished from a dead owner"
+' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN" || fail "authenticated reconnect grace did not retain the compositor"
 
-printf 'PASS: heartbeat handles torn writes, stale dead owners, and suspended authenticated owners\n'
+grep -q '#define AUTHENTICATED_RECONNECT_GRACE_SECONDS 300.0' "$SOURCE" || fail "authenticated reconnect grace is not explicitly bounded"
+
+printf 'PASS: heartbeat handles torn writes, stale startup owners, and bounded authenticated reconnect grace\n'

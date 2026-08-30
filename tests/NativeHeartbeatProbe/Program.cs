@@ -1,13 +1,140 @@
 using System;
 using System.Drawing;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using ClickableTransparentOverlay;
 
 var assembly = typeof(Overlay).Assembly;
+var disconnectPolicyType = assembly.GetType("ClickableTransparentOverlay.NativeGpuDisconnectPolicy")
+    ?? throw new InvalidOperationException("NativeGpuDisconnectPolicy missing");
+var shouldWaitForReconnect = disconnectPolicyType.GetMethod("ShouldWaitForReconnect", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuDisconnectPolicy.ShouldWaitForReconnect missing");
+if (!(bool)(shouldWaitForReconnect.Invoke(null, new object[] { true, true, false }) ?? false) ||
+    (bool)(shouldWaitForReconnect.Invoke(null, new object[] { false, true, false }) ?? true) ||
+    (bool)(shouldWaitForReconnect.Invoke(null, new object[] { true, false, false }) ?? true) ||
+    (bool)(shouldWaitForReconnect.Invoke(null, new object[] { true, true, true }) ?? true))
+    throw new InvalidOperationException("native disconnect policy does not isolate a started disconnected native backend");
+
+var transportType = assembly.GetType("ClickableTransparentOverlay.NativeGpuTransport")
+    ?? throw new InvalidOperationException("NativeGpuTransport missing");
+var transportConstructor = transportType.GetConstructor(
+    BindingFlags.Instance | BindingFlags.NonPublic,
+    binder: null,
+    new[] { typeof(int), typeof(byte[]) },
+    modifiers: null)
+    ?? throw new InvalidOperationException("NativeGpuTransport constructor missing");
+var waitForReady = transportType.GetMethod("WaitForReady", BindingFlags.Instance | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuTransport.WaitForReady missing");
+var trySend = transportType.GetMethod("TrySend", BindingFlags.Instance | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuTransport.TrySend missing");
+var authBytes = new byte[32];
+for (var i = 0; i < authBytes.Length; i++) authBytes[i] = (byte)(i + 1);
+using var listener = new TcpListener(IPAddress.Loopback, 0);
+listener.Start();
+var reconnectPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+var firstConnectionClosed = new ManualResetEventSlim(false);
+var secondFrameReceived = new ManualResetEventSlim(false);
+var serverTask = Task.Run(() =>
+{
+    for (var connectionNumber = 0; connectionNumber < 2; connectionNumber++)
+    {
+        using var accepted = listener.AcceptTcpClient();
+        using var stream = accepted.GetStream();
+        var authLengthBytes = new byte[4];
+        stream.ReadExactly(authLengthBytes);
+        var authLength = BitConverter.ToInt32(authLengthBytes, 0);
+        if (authLength != 36) throw new InvalidOperationException("reconnected transport skipped authentication length");
+        var authPayload = new byte[authLength];
+        stream.ReadExactly(authPayload);
+        if (BitConverter.ToUInt32(authPayload, 0) != 0x31485541)
+            throw new InvalidOperationException("reconnected transport skipped authentication magic");
+        for (var i = 0; i < authBytes.Length; i++)
+            if (authPayload[i + 4] != authBytes[i]) throw new InvalidOperationException("reconnected transport used the wrong token");
+        stream.Write(BitConverter.GetBytes(0x31594452u));
+
+        var frameLengthBytes = new byte[4];
+        stream.ReadExactly(frameLengthBytes);
+        var frameLength = BitConverter.ToInt32(frameLengthBytes, 0);
+        var frame = new byte[frameLength];
+        stream.ReadExactly(frame);
+        if (connectionNumber == 0)
+        {
+            accepted.Client.LingerState = new LingerOption(true, 0);
+            firstConnectionClosed.Set();
+        }
+        else
+        {
+            secondFrameReceived.Set();
+        }
+    }
+});
+var reconnectTransport = transportConstructor.Invoke(new object[] { reconnectPort, authBytes });
+if (!(bool)(waitForReady.Invoke(reconnectTransport, new object[] { TimeSpan.FromSeconds(2) }) ?? false))
+    throw new InvalidOperationException("initial native transport authentication failed");
+if (!(bool)(trySend.Invoke(reconnectTransport, new object[] { new byte[] { 1, 2, 3, 4 } }) ?? false))
+    throw new InvalidOperationException("initial native transport frame failed");
+if (!firstConnectionClosed.Wait(TimeSpan.FromSeconds(2)))
+    throw new InvalidOperationException("test server did not close the first authenticated connection");
+var reconnectDeadline = DateTime.UtcNow.AddSeconds(3);
+while (DateTime.UtcNow < reconnectDeadline && !secondFrameReceived.IsSet)
+{
+    _ = trySend.Invoke(reconnectTransport, new object[] { new byte[] { 5, 6, 7, 8 } });
+    Thread.Sleep(25);
+}
+if (!secondFrameReceived.Wait(TimeSpan.FromSeconds(1)))
+    throw new InvalidOperationException("native transport did not reconnect and re-authenticate after connection loss");
+((IDisposable)reconnectTransport).Dispose();
+if (!serverTask.Wait(TimeSpan.FromSeconds(2)))
+    throw new InvalidOperationException("reconnect test server did not finish");
+firstConnectionClosed.Dispose();
+secondFrameReceived.Dispose();
+
+using var slowListener = new TcpListener(IPAddress.Loopback, 0);
+slowListener.Start();
+var slowPort = ((IPEndPoint)slowListener.LocalEndpoint).Port;
+var slowFrameReceived = new ManualResetEventSlim(false);
+var slowServer = Task.Run(() =>
+{
+    using var accepted = slowListener.AcceptTcpClient();
+    using var stream = accepted.GetStream();
+    var lengthBytes = new byte[4];
+    stream.ReadExactly(lengthBytes);
+    var authLength = BitConverter.ToInt32(lengthBytes, 0);
+    var authPayload = new byte[authLength];
+    stream.ReadExactly(authPayload);
+    Thread.Sleep(300);
+    stream.Write(BitConverter.GetBytes(0x31594452u));
+    stream.ReadExactly(lengthBytes);
+    var frameLength = BitConverter.ToInt32(lengthBytes, 0);
+    var frame = new byte[frameLength];
+    stream.ReadExactly(frame);
+    slowFrameReceived.Set();
+});
+var nonBlockingTransport = transportConstructor.Invoke(new object[] { slowPort, authBytes });
+var sendTimer = Stopwatch.StartNew();
+var initialSend = (bool)(trySend.Invoke(nonBlockingTransport, new object[] { new byte[] { 9, 10, 11, 12 } }) ?? false);
+sendTimer.Stop();
+if (initialSend || sendTimer.Elapsed > TimeSpan.FromMilliseconds(50))
+    throw new InvalidOperationException("reconnect work blocked the render caller instead of running in the background");
+var slowDeadline = DateTime.UtcNow.AddSeconds(3);
+while (DateTime.UtcNow < slowDeadline && !slowFrameReceived.IsSet)
+{
+    _ = trySend.Invoke(nonBlockingTransport, new object[] { new byte[] { 9, 10, 11, 12 } });
+    Thread.Sleep(25);
+}
+if (!slowFrameReceived.Wait(TimeSpan.FromSeconds(1)))
+    throw new InvalidOperationException("background authentication never published a subsequent frame");
+((IDisposable)nonBlockingTransport).Dispose();
+if (!slowServer.Wait(TimeSpan.FromSeconds(2)))
+    throw new InvalidOperationException("slow authentication test server did not finish");
+slowFrameReceived.Dispose();
+
 var closeDiagnosticsType = assembly.GetType("ClickableTransparentOverlay.OverlayCloseDiagnostics")
     ?? throw new InvalidOperationException("OverlayCloseDiagnostics missing");
 var captureClose = closeDiagnosticsType.GetMethod("CaptureOnce", BindingFlags.Static | BindingFlags.NonPublic)

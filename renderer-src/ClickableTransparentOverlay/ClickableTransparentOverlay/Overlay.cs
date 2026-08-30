@@ -33,6 +33,7 @@
         private readonly bool useNativeGpu;
         private bool nativeGpuStarted;
         private bool nativeGpuStartAttempted;
+        private bool nativeGpuDisconnectedLogged;
 
         private WNDCLASSEX wndClass;
 
@@ -550,11 +551,18 @@
                 stopwatch.Restart();
                 this.window.PumpEvents();
                 if (this.nativeGpuStarted) NativeGpuProbe.PollInput(this.inputhandler, this.renderer);
-                if (this.nativeGpuStarted && !NativeGpuProbe.IsConnected)
+                if (NativeGpuDisconnectPolicy.ShouldWaitForReconnect(this.useNativeGpu, this.nativeGpuStarted, NativeGpuProbe.IsConnected))
                 {
-                    LogRenderer("native GPU helper connection lost; closing overlay");
-                    this.Close();
-                    break;
+                    if (!this.nativeGpuDisconnectedLogged)
+                    {
+                        NativeGpuProbe.PrepareReconnect(this.inputhandler, this.renderer);
+                        LogRenderer("native GPU helper connection lost; waiting for authenticated reconnect");
+                        this.nativeGpuDisconnectedLogged = true;
+                    }
+                }
+                else
+                {
+                    this.nativeGpuDisconnectedLogged = false;
                 }
                 if (this.useNativeGpu && !this.nativeGpuStartAttempted)
                 {

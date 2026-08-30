@@ -14,6 +14,24 @@ var renderer = Activator.CreateInstance(
     binder: null,
     args: new object?[] { null, null, 800, 600, true },
     culture: null) ?? throw new InvalidOperationException("native renderer creation failed");
+var inputType = assembly.GetType("ClickableTransparentOverlay.ImGuiInputHandler")
+    ?? throw new InvalidOperationException("ImGuiInputHandler missing");
+var input = Activator.CreateInstance(
+    inputType,
+    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+    binder: null,
+    args: new object[] { IntPtr.Zero },
+    culture: null) ?? throw new InvalidOperationException("native input handler creation failed");
+var probeType = assembly.GetType("ClickableTransparentOverlay.NativeGpuProbe")
+    ?? throw new InvalidOperationException("NativeGpuProbe missing");
+var prepareReconnect = probeType.GetMethod("PrepareReconnect", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuProbe.PrepareReconnect missing");
+var interactiveField = probeType.GetField("interactive", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuProbe.interactive missing");
+var keyboardCaptureField = probeType.GetField("keyboardCapture", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuProbe.keyboardCapture missing");
+var fontSentField = probeType.GetField("fontSent", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuProbe.fontSent missing");
 
 MethodInfo Method(string name) => type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
     ?? throw new InvalidOperationException($"{name} missing");
@@ -32,6 +50,16 @@ if (pixels.Length != 16 || !pixels.Take(4).SequenceEqual(new byte[] { 10, 20, 30
     throw new InvalidOperationException("RGBA pixels were not retained exactly");
 
 Method("MarkNativeTextureChunkSent").Invoke(renderer, new object[] { handle, 16 });
+interactiveField.SetValue(null, true);
+keyboardCaptureField.SetValue(null, true);
+fontSentField.SetValue(null, true);
+prepareReconnect.Invoke(null, new[] { input, renderer });
+if (interactiveField.GetValue(null) != null || keyboardCaptureField.GetValue(null) != null ||
+    !Equals(fontSentField.GetValue(null), false))
+    throw new InvalidOperationException("connection-scoped input/font state remained cached across reconnect");
+pending = (Array)(Method("GetPendingNativeTextures").Invoke(renderer, null)
+    ?? throw new InvalidOperationException("pending textures missing after reconnect reset"));
+if (pending.Length != 1) throw new InvalidOperationException("in-flight native texture was stranded after reconnect reset");
 Method("AcknowledgeNativeTexture").Invoke(renderer, new object[] { handle, false });
 pending = (Array)(Method("GetPendingNativeTextures").Invoke(renderer, null)
     ?? throw new InvalidOperationException("pending textures missing"));

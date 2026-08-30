@@ -85,6 +85,18 @@
             if (success) this.nativeTextureDeletes.Remove(id);
         }
 
+        internal void ResetNativeTransferStateForReconnect()
+        {
+            foreach (var id in this.nativeTextures.Keys.ToArray())
+            {
+                var texture = this.nativeTextures[id];
+                if (texture.InFlight || (!texture.Sent && texture.UploadOffset > 0))
+                    this.nativeTextures[id] = texture with { InFlight = false, UploadOffset = 0 };
+            }
+
+            this.nativeTextureDeletesInFlight.Clear();
+        }
+
         public ImGuiRenderer(ID3D11Device device, ID3D11DeviceContext deviceContext, int width, int height, bool nativeOnly = false)
         {
             this.device = device;
