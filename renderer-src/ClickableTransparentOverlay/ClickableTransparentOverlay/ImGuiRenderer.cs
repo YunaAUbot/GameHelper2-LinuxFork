@@ -85,18 +85,6 @@
             if (success) this.nativeTextureDeletes.Remove(id);
         }
 
-        internal void ResetNativeResourcesForCompositorRestart()
-        {
-            foreach (var id in this.nativeTextures.Keys.ToArray())
-            {
-                var texture = this.nativeTextures[id];
-                this.nativeTextures[id] = texture with { Sent = false, InFlight = false, UploadOffset = 0 };
-            }
-
-            this.nativeTextureDeletes.Clear();
-            this.nativeTextureDeletesInFlight.Clear();
-        }
-
         public ImGuiRenderer(ID3D11Device device, ID3D11DeviceContext deviceContext, int width, int height, bool nativeOnly = false)
         {
             this.device = device;
