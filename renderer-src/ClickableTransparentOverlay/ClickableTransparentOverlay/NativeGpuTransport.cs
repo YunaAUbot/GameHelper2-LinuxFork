@@ -14,7 +14,6 @@ namespace ClickableTransparentOverlay
         private TcpClient client;
         private NetworkStream stream;
         private DateTime nextConnectAttempt = DateTime.MinValue;
-        private bool ready;
         private int expectedIncoming = -1;
         private byte[] incoming;
         private int incomingCount;
@@ -25,15 +24,27 @@ namespace ClickableTransparentOverlay
             this.authentication = authentication;
         }
 
-        internal bool IsConnected => this.ready && this.stream is not null && this.client?.Connected == true;
+        internal bool IsConnected => this.stream is not null && this.client?.Connected == true;
 
         internal bool WaitForReady(TimeSpan timeout)
         {
             var timer = Stopwatch.StartNew();
             while (timer.Elapsed < timeout)
             {
-                if (EnsureReady()) return true;
-                System.Threading.Thread.Sleep(10);
+                if (!EnsureConnected()) { System.Threading.Thread.Sleep(10); continue; }
+                try
+                {
+                    var auth = new byte[8 + this.authentication.Length];
+                    BitConverter.GetBytes(auth.Length - 4).CopyTo(auth, 0);
+                    BitConverter.GetBytes(NativeGpuFrameProtocol.AuthMagic).CopyTo(auth, 4);
+                    this.authentication.CopyTo(auth, 8);
+                    this.stream.Write(auth, 0, auth.Length);
+                    var ready = new byte[4];
+                    this.stream.ReadExactly(ready);
+                    if (BitConverter.ToUInt32(ready, 0) == NativeGpuFrameProtocol.ReadyMagic) return true;
+                }
+                catch { }
+                DisposeConnection();
             }
             return false;
         }
@@ -42,7 +53,7 @@ namespace ClickableTransparentOverlay
         {
             try
             {
-                if (!EnsureReady()) return false;
+                if (!EnsureConnected()) return false;
                 var length = BitConverter.GetBytes(frame.Length);
                 this.stream.Write(length, 0, length.Length);
                 this.stream.Write(frame, 0, frame.Length);
@@ -103,37 +114,10 @@ namespace ClickableTransparentOverlay
             catch { candidate.Dispose(); return false; }
         }
 
-        private bool EnsureReady()
-        {
-            if (this.ready && this.stream is not null) return true;
-            if (!EnsureConnected()) return false;
-            var currentStream = this.stream;
-            if (currentStream is null) return false;
-            try
-            {
-                var auth = new byte[8 + this.authentication.Length];
-                BitConverter.GetBytes(auth.Length - 4).CopyTo(auth, 0);
-                BitConverter.GetBytes(NativeGpuFrameProtocol.AuthMagic).CopyTo(auth, 4);
-                this.authentication.CopyTo(auth, 8);
-                currentStream.Write(auth, 0, auth.Length);
-                var response = new byte[4];
-                currentStream.ReadExactly(response);
-                this.ready = BitConverter.ToUInt32(response, 0) == NativeGpuFrameProtocol.ReadyMagic;
-                if (this.ready) return true;
-            }
-            catch
-            {
-            }
-
-            DisposeConnection();
-            return false;
-        }
-
         private void DisposeConnection()
         {
             this.stream?.Dispose(); this.stream = null;
             this.client?.Dispose(); this.client = null;
-            this.ready = false;
             this.expectedIncoming = -1; this.incoming = null; this.incomingCount = 0;
         }
 
