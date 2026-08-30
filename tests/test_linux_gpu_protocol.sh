@@ -203,25 +203,20 @@ second.sendall(struct.pack("<I", len(payload)) + payload)
 await_texture_ack(second, 1, 4, 0)
 second.close()
 
-# A stalled partial payload is bounded to one receive timeout, not four.
+# A suspended authenticated sender may stop halfway through one bounded payload.
+# Preserve the partial frame until the same live connection resumes instead of
+# tearing down the entire overlay after the ordinary one-second socket timeout.
 time.sleep(0.1)
 partial = connect_retry()
 authenticate(partial, token)
 assert partial.recv(4) == struct.pack("<I", READY)
-payload = struct.pack("<II", INPUT, 0)
+payload = struct.pack("<II", INPUT, 1)
 partial.sendall(struct.pack("<I", len(payload)) + payload[:2])
 time.sleep(1.2)
-partial.settimeout(0.1)
-closed = False
-deadline = time.time() + 1.0
-while time.time() < deadline:
-    try:
-        if partial.recv(4096) == b"":
-            closed = True
-            break
-    except TimeoutError:
-        pass
-assert closed
+os.kill(pid, 0)
+partial.sendall(payload[2:])
+time.sleep(0.2)
+assert "mode 1" in open("/tmp/gamehelper2-gpu-input.log", encoding="utf-8").read()
 partial.close()
 os.kill(pid, 0)
 
