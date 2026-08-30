@@ -421,7 +421,6 @@ namespace Radar
                 }
             }
 
-            this.CollectEntityPaths();
             this.RebuildEntityPaths();
             this.RebuildTrackedNodes();
 
@@ -1883,12 +1882,13 @@ namespace Radar
 
             this.nextEntityRecomputeTime = now + this.Settings.PathRecomputeIntervalMs;
 
-            if (this.entityPathSnapshot.Count == 0 && this.tileIconPathSnapshot.Count == 0)
+            if (this.pendingEntityPathTask != null && !this.pendingEntityPathTask.IsCompleted)
             {
                 return;
             }
 
-            if (this.pendingEntityPathTask != null && !this.pendingEntityPathTask.IsCompleted)
+            this.CollectEntityPaths();
+            if (this.entityPathSnapshot.Count == 0 && this.tileIconPathSnapshot.Count == 0)
             {
                 return;
             }

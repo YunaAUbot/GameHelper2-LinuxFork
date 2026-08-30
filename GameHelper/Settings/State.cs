@@ -6,6 +6,8 @@ namespace GameHelper.Settings
 {
     using System.Collections.Generic;
     using System.IO;
+    using System.Linq;
+    using System.Runtime.Serialization;
     using ClickableTransparentOverlay;
     using ClickableTransparentOverlay.Win32;
     using GameHelper.Localization;
@@ -247,6 +249,7 @@ namespace GameHelper.Settings
         /// <summary>
         ///     Gets or sets the custom categories (and its defination) for MiscellaneousObjects in the game.
         /// </summary>
+        [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public List<(string path, int group)> SpecialMiscObjPaths = new()
         {
             ("Metadata/MiscellaneousObjects/Expedition/ExpeditionMarker", 100),
@@ -264,6 +267,7 @@ namespace GameHelper.Settings
         ///     Gets or sets a list of monsters path to ignore.
         ///     The condition used is StartsWith so just provide enough to make the path unique.
         /// </summary>
+        [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public List<string> MonstersPathsToIgnore = new()
         {
             "Metadata/Monsters/LeagueIncursionNew/Garrison/VaalTrainingDummy",
@@ -308,5 +312,13 @@ namespace GameHelper.Settings
         ///     How many consecutive invalid frames before an entity is removed.
         /// </summary>
         public int StaleEntityFrameThreshold = 120;
+
+        [OnDeserialized]
+        internal void NormalizePersistedCollections(StreamingContext context)
+        {
+            _ = context;
+            this.SpecialMiscObjPaths = (this.SpecialMiscObjPaths ?? new()).Distinct().ToList();
+            this.MonstersPathsToIgnore = (this.MonstersPathsToIgnore ?? new()).Distinct().ToList();
+        }
     }
 }
