@@ -229,7 +229,7 @@ static void add_input_triangle(Region region, const unsigned char *verts, uint32
     XUnionRectWithRegion(&rect, region, region);
 }
 
-static void draw_frame(Display *d, Window window, const unsigned char *p, size_t bytes, int width, int height, GLuint font, struct native_textures *textures) {
+static void draw_frame(Display *d, Window window, const unsigned char *p, size_t bytes, int width, int height, GLuint font, struct native_textures *textures, int input_mode) {
     const unsigned char *end=p+bytes; Region input_region=XCreateRegion(); int valid=0;
     if(!input_region)return;
     if(bytes<32 || u32(&p)!=FRAME_MAGIC)goto cleanup;
@@ -279,7 +279,8 @@ static void draw_frame(Display *d, Window window, const unsigned char *p, size_t
     /* An empty region is deliberate: events outside menu background pixels go
        directly to PoE.  This replaces the unreliable GetAsyncKeyState polling
        path with complete ButtonPress/ButtonRelease pairs. */
-    XShapeCombineRegion(d, window, ShapeInput, 0, 0, input_region, ShapeSet);
+    if(input_mode) XShapeCombineRegion(d, window, ShapeInput, 0, 0, input_region, ShapeSet);
+    else XShapeCombineRectangles(d,window,ShapeInput,0,0,NULL,0,ShapeSet,Unsorted);
     valid=1;
 cleanup:
     if(!valid) XShapeCombineRectangles(d,window,ShapeInput,0,0,NULL,0,ShapeSet,Unsorted);
@@ -317,7 +318,7 @@ int main(int argc,char **argv) {
     int listener=socket(AF_INET,SOCK_STREAM,0), client=-1,yes=1;setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);fcntl(listener,F_SETFL,fcntl(listener,F_GETFL,0)|O_NONBLOCK);struct sockaddr_in addr;memset(&addr,0,sizeof addr);addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);addr.sin_port=htons(port);if(bind(listener,(struct sockaddr*)&addr,sizeof addr)||listen(listener,1)){perror("gpu bind");return 6;}double started=now_seconds();
     int input_mode=0; struct keyboard_capture keyboard={0}; struct native_textures textures={0}; struct native_texture_upload texture_upload={0}; double last_valid_heartbeat=wall_seconds(),last_client_seen=0;
     while(now_seconds()-started<duration) {
-        double loop_now=now_seconds();if(client>=0)last_client_seen=loop_now;int reconnect_grace=last_client_seen>0&&loop_now-last_client_seen<=AUTHENTICATED_RECONNECT_GRACE_SECONDS;
+        double loop_now=now_seconds();if(client>=0)last_client_seen=loop_now;if(client<0&&input_mode){input_mode=0;set_input(d,w,width,height,0);}int reconnect_grace=last_client_seen>0&&loop_now-last_client_seen<=AUTHENTICATED_RECONNECT_GRACE_SECONDS;
         double heartbeat_now=wall_seconds();
         double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
         if(heartbeat_timestamp>0) {
@@ -325,11 +326,10 @@ int main(int argc,char **argv) {
             last_valid_heartbeat=heartbeat_now;
         } else if(heartbeat_now-last_valid_heartbeat>3 && client<0 && !reconnect_grace) { trace_renderer_event("missing-heartbeat",heartbeat_now-last_valid_heartbeat,client); break; }
         int heartbeat_x=x,heartbeat_y=y,heartbeat_width=width,heartbeat_height=height;
-        int requested=heartbeat_state(argv[6],&heartbeat_x,&heartbeat_y,&heartbeat_width,&heartbeat_height);
-        if(!valid_geometry(heartbeat_x,heartbeat_y,heartbeat_width,heartbeat_height)){heartbeat_x=x;heartbeat_y=y;heartbeat_width=width;heartbeat_height=height;requested=0;}
+        (void)heartbeat_state(argv[6],&heartbeat_x,&heartbeat_y,&heartbeat_width,&heartbeat_height);
+        if(!valid_geometry(heartbeat_x,heartbeat_y,heartbeat_width,heartbeat_height)){heartbeat_x=x;heartbeat_y=y;heartbeat_width=width;heartbeat_height=height;}
         if(!poe_geometry(d,screen,&x,&y,&width,&height)) { x=heartbeat_x;y=heartbeat_y;width=heartbeat_width;height=heartbeat_height; }
         if(valid_geometry(x,y,width,height)) { XMoveResizeWindow(d,w,x,y,(unsigned)width,(unsigned)height); XRaiseWindow(d,w); }
-        if(requested!=input_mode) { input_mode=requested; set_input(d,w,width,height,input_mode); }
         if(keyboard.requested&&!keyboard.active) request_keyboard(d,w,client,&keyboard,1);
         send_pointer_position(d,w,client);
         while(XPending(d)) {
@@ -379,9 +379,9 @@ int main(int argc,char **argv) {
                     if(finished){accepted=upload_texture(&textures,id,tw,th,total,texture_upload.pixels);reset_texture_upload(&texture_upload);if(!send_texture_ack(client,1,accepted,id))close_texture_client(d,&client,&keyboard,&texture_upload);}
                     else if(!accepted){reset_texture_upload(&texture_upload);if(!send_texture_ack(client,1,0,id))close_texture_client(d,&client,&keyboard,&texture_upload);}
                 } else if(magic==TEXTURE_DELETE_MAGIC&&len==12) { uint64_t id=u64(&p);int success=id>1;if(success){if(texture_upload.id==id)reset_texture_upload(&texture_upload);(void)delete_texture(&textures,id);}if(!send_texture_ack(client,2,success,id))close_texture_client(d,&client,&keyboard,&texture_upload); }
-                else if(len==8&&magic==INPUT_MODE_MAGIC) set_input(d,w,width,height,u32(&p)!=0);
+                else if(len==8&&magic==INPUT_MODE_MAGIC) { input_mode=u32(&p)!=0; set_input(d,w,width,height,input_mode); }
                 else if(len==8&&magic==KEYBOARD_MODE_MAGIC) request_keyboard(d,w,client,&keyboard,u32(&p)!=0);
-                else draw_frame(d,w,buf,len,width,height,font,&textures);
+                else draw_frame(d,w,buf,len,width,height,font,&textures,input_mode);
             }
         }
         free(buf);
