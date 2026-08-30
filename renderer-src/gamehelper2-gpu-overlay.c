@@ -58,6 +58,10 @@ static void trace_renderer(void) {
     FILE *f=fopen("/tmp/gamehelper2-gpu-renderer.log","a");
     if(f){fprintf(f,"%.3f pid=%ld vendor=%s renderer=%s version=%s\n",now_seconds(),(long)getpid(),vendor?vendor:"unknown",renderer?renderer:"unknown",version?version:"unknown");fclose(f);}
 }
+static void trace_renderer_event(const char *event, double heartbeat_age, int client) {
+    FILE *f=fopen("/tmp/gamehelper2-gpu-renderer.log","a");
+    if(f){fprintf(f,"%.3f pid=%ld event=%s heartbeat_age=%.3f client=%d\n",now_seconds(),(long)getpid(),event,heartbeat_age,client);fclose(f);}
+}
 static uint32_t u32(const unsigned char **p) { uint32_t v; memcpy(&v,*p,4); *p+=4; return v; }
 static uint64_t u64(const unsigned char **p) { uint64_t v; memcpy(&v,*p,8); *p+=8; return v; }
 static float f32(const unsigned char **p) { float v; memcpy(&v,*p,4); *p+=4; return v; }
@@ -315,9 +319,9 @@ int main(int argc,char **argv) {
         double heartbeat_now=wall_seconds();
         double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
         if(heartbeat_timestamp>0) {
-            if(heartbeat_now-heartbeat_timestamp>3) break;
+            if(heartbeat_now-heartbeat_timestamp>3 && client<0) { trace_renderer_event("stale-heartbeat",heartbeat_now-heartbeat_timestamp,client); break; }
             last_valid_heartbeat=heartbeat_now;
-        } else if(heartbeat_now-last_valid_heartbeat>3) break;
+        } else if(heartbeat_now-last_valid_heartbeat>3 && client<0) { trace_renderer_event("missing-heartbeat",heartbeat_now-last_valid_heartbeat,client); break; }
         int heartbeat_x=x,heartbeat_y=y,heartbeat_width=width,heartbeat_height=height;
         int requested=heartbeat_state(argv[6],&heartbeat_x,&heartbeat_y,&heartbeat_width,&heartbeat_height);
         if(!valid_geometry(heartbeat_x,heartbeat_y,heartbeat_width,heartbeat_height)){heartbeat_x=x;heartbeat_y=y;heartbeat_width=width;heartbeat_height=height;requested=0;}

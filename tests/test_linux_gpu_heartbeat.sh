@@ -47,4 +47,55 @@ xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX +render -noreset' bash -c '
   exit 43
 ' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN" || fail "renderer did not tolerate a torn heartbeat and expire a stale owner"
 
-printf 'PASS: torn heartbeat is tolerated while a stale owner still expires\n'
+# A suspended managed process can stop every CLR thread during an alt-tab while
+# its authenticated loopback connection remains alive.  The native compositor
+# must retain that live connection despite a stale file, then exit promptly once
+# the connection actually closes and the owner remains stale.
+printf '%s 0 0 0 800 600\n' "$(date +%s%3N)" > "$HEARTBEAT"
+PORT=$((PORT + 1))
+xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX +render -noreset' bash -c '
+  set -euo pipefail
+  helper=$1 heartbeat=$2 port=$3 token=$4
+  "$helper" 0 0 800 600 30 "$heartbeat" "$port" "$token" >/dev/null 2>&1 &
+  pid=$!
+  trap "kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true" EXIT
+  python3 - "$heartbeat" "$port" "$token" "$pid" <<"PY"
+import os
+import socket
+import struct
+import sys
+import time
+
+heartbeat, port, token, pid = sys.argv[1], int(sys.argv[2]), bytes.fromhex(sys.argv[3]), int(sys.argv[4])
+deadline = time.time() + 5
+while True:
+    try:
+        client = socket.create_connection(("127.0.0.1", port), 0.2)
+        break
+    except OSError:
+        if time.time() >= deadline:
+            raise
+        time.sleep(0.02)
+
+auth = struct.pack("<I", 0x31485541) + token
+client.sendall(struct.pack("<I", len(auth)) + auth)
+assert client.recv(4) == struct.pack("<I", 0x31594452)
+with open(heartbeat, "w", encoding="utf-8") as stream:
+    stream.write("1 0 0 0 800 600\n")
+
+time.sleep(3.5)
+os.kill(pid, 0)
+client.close()
+deadline = time.time() + 2
+while time.time() < deadline:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.02)
+else:
+    raise AssertionError("native compositor survived a closed owner connection with a stale heartbeat")
+PY
+' bash "$BINARY" "$HEARTBEAT" "$PORT" "$TOKEN" || fail "authenticated idle owner was not distinguished from a dead owner"
+
+printf 'PASS: heartbeat handles torn writes, stale dead owners, and suspended authenticated owners\n'
