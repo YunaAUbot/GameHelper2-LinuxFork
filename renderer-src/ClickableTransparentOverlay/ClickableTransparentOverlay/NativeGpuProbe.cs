@@ -13,6 +13,7 @@ namespace ClickableTransparentOverlay
     internal sealed class NativeGpuProbe
     {
         private static string heartbeatWindowsPath;
+        private static NativeGpuHeartbeat heartbeat;
         private static NativeGpuTransport transport;
         private static bool fontSent;
         private static bool? interactive;
@@ -30,7 +31,7 @@ namespace ClickableTransparentOverlay
                 if (!File.Exists(helper)) return false;
                 var unixHelper = "/" + helper.Substring(3).Replace('\\', '/');
                 heartbeatWindowsPath = $@"Z:\tmp\gamehelper2-gpu-overlay-{Environment.ProcessId}.alive";
-                File.WriteAllText(heartbeatWindowsPath, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString());
+                heartbeat = new NativeGpuHeartbeat(heartbeatWindowsPath, bounds, TimeSpan.FromSeconds(1));
                 var unixHeartbeat = "/tmp/" + Path.GetFileName(heartbeatWindowsPath);
                 using var reservation = new TcpListener(IPAddress.Loopback, 0);
                 reservation.Start();
@@ -56,9 +57,7 @@ namespace ClickableTransparentOverlay
 
         internal static void Pulse(Rectangle bounds)
         {
-            if (heartbeatWindowsPath is null) return;
-            try { File.WriteAllText(heartbeatWindowsPath, $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} {(menuInput ? 1 : 0)} {bounds.X} {bounds.Y} {bounds.Width} {bounds.Height}"); }
-            catch { }
+            heartbeat?.Update(bounds, menuInput);
         }
 
         internal static void ToggleMenuInput() => menuInput = !menuInput;
@@ -139,6 +138,7 @@ namespace ClickableTransparentOverlay
         internal static void Stop()
         {
             transport?.Dispose(); transport = null; fontSent = false; interactive = null; keyboardCapture = null; menuInput = false;
+            heartbeat?.Dispose(); heartbeat = null;
             NativeKeyState.Reset();
             if (heartbeatWindowsPath is not null) { try { File.Delete(heartbeatWindowsPath); } catch { } }
             heartbeatWindowsPath = null;
