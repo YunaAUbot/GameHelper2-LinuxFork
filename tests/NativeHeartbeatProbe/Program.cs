@@ -8,6 +8,15 @@ using System.Threading.Tasks;
 using ClickableTransparentOverlay;
 
 var assembly = typeof(Overlay).Assembly;
+var windowLifecycleType = assembly.GetType("ClickableTransparentOverlay.NativeWindowLifecycle")
+    ?? throw new InvalidOperationException("NativeWindowLifecycle missing");
+var shouldCloseOnDestroy = windowLifecycleType.GetMethod("ShouldCloseOnDestroy", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeWindowLifecycle.ShouldCloseOnDestroy missing");
+if ((bool)(shouldCloseOnDestroy.Invoke(null, new object[] { true }) ?? true))
+    throw new InvalidOperationException("native backend treated destruction of its disposable Wine host window as overlay shutdown");
+if (!(bool)(shouldCloseOnDestroy.Invoke(null, new object[] { false }) ?? false))
+    throw new InvalidOperationException("Windows backend stopped closing when its presenter window is destroyed");
+
 var type = assembly.GetType("ClickableTransparentOverlay.NativeGpuHeartbeat")
     ?? throw new InvalidOperationException("NativeGpuHeartbeat missing");
 var deterministicConstructor = type.GetConstructor(

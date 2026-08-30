@@ -762,7 +762,12 @@
 
                     break;
                 case WindowMessage.Destroy:
-                    this.Close();
+                    LogRenderer($"host window destroyed; backend={(this.useNativeGpu ? "native-gpu" : "windows")}");
+                    if (NativeWindowLifecycle.ShouldCloseOnDestroy(this.useNativeGpu))
+                    {
+                        this.Close();
+                    }
+
                     break;
                 default:
                     break;
