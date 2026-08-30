@@ -41,6 +41,12 @@ Method("AcknowledgeNativeTexture").Invoke(renderer, new object[] { handle, true 
 pending = (Array)(Method("GetPendingNativeTextures").Invoke(renderer, null)
     ?? throw new InvalidOperationException("pending textures missing"));
 if (pending.Length != 0) throw new InvalidOperationException("sent texture remained pending");
+Method("ResetNativeResourcesForCompositorRestart").Invoke(renderer, null);
+pending = (Array)(Method("GetPendingNativeTextures").Invoke(renderer, null)
+    ?? throw new InvalidOperationException("pending textures missing after compositor restart"));
+if (pending.Length != 1) throw new InvalidOperationException("acknowledged texture was not queued for re-upload after compositor restart");
+Method("MarkNativeTextureChunkSent").Invoke(renderer, new object[] { handle, 16 });
+Method("AcknowledgeNativeTexture").Invoke(renderer, new object[] { handle, true });
 if (!(bool)(Method("RemoveImageTexture").Invoke(renderer, new object[] { handle }) ?? false))
     throw new InvalidOperationException("sent texture could not be removed");
 var deletes = (long[])(Method("GetPendingNativeTextureDeletes").Invoke(renderer, null)

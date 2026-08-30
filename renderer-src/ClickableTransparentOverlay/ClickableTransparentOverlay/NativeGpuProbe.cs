@@ -30,7 +30,7 @@ namespace ClickableTransparentOverlay
                 var helper = Path.Combine(baseDirectory, "gamehelper2-gpu-overlay");
                 if (!File.Exists(helper)) return false;
                 var unixHelper = "/" + helper.Substring(3).Replace('\\', '/');
-                heartbeatWindowsPath = $@"Z:\tmp\gamehelper2-gpu-overlay-{Environment.ProcessId}.alive";
+                heartbeatWindowsPath = $@"Z:\tmp\gamehelper2-gpu-overlay-{Guid.NewGuid():N}-{Environment.ProcessId}.alive";
                 heartbeat = new NativeGpuHeartbeat(heartbeatWindowsPath, bounds, TimeSpan.FromSeconds(1));
                 var unixHeartbeat = "/tmp/" + Path.GetFileName(heartbeatWindowsPath);
                 using var reservation = new TcpListener(IPAddress.Loopback, 0);

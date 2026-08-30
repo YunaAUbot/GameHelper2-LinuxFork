@@ -34,6 +34,8 @@
         private bool nativeGpuStarted;
         private bool nativeGpuStartAttempted;
         private bool nativeGpuDisconnectedLogged;
+        private DateTime nativeGpuDisconnectedSince = DateTime.MinValue;
+        private bool nativeGpuRestartAttempted;
 
         private WNDCLASSEX wndClass;
 
@@ -551,18 +553,42 @@
                 stopwatch.Restart();
                 this.window.PumpEvents();
                 if (this.nativeGpuStarted) NativeGpuProbe.PollInput(this.inputhandler, this.renderer);
-                if (NativeGpuDisconnectPolicy.ShouldWaitForReconnect(this.useNativeGpu, this.nativeGpuStarted, NativeGpuProbe.IsConnected))
+                var nativeConnected = NativeGpuProbe.IsConnected;
+                if (NativeGpuDisconnectPolicy.ShouldWaitForReconnect(this.useNativeGpu, this.nativeGpuStarted, nativeConnected))
                 {
                     if (!this.nativeGpuDisconnectedLogged)
                     {
                         NativeGpuProbe.PrepareReconnect();
                         LogRenderer("native GPU helper connection lost; waiting for authenticated reconnect");
                         this.nativeGpuDisconnectedLogged = true;
+                        this.nativeGpuDisconnectedSince = DateTime.UtcNow;
                     }
                 }
                 else
                 {
                     this.nativeGpuDisconnectedLogged = false;
+                    this.nativeGpuDisconnectedSince = DateTime.MinValue;
+                }
+
+                var disconnectedFor = this.nativeGpuDisconnectedSince == DateTime.MinValue
+                    ? TimeSpan.Zero
+                    : DateTime.UtcNow - this.nativeGpuDisconnectedSince;
+                if (NativeGpuRestartPolicy.ShouldRestart(
+                        this.useNativeGpu,
+                        this.nativeGpuStarted,
+                        nativeConnected,
+                        this.nativeGpuRestartAttempted,
+                        disconnectedFor))
+                {
+                    LogRenderer("native GPU reconnect grace expired; restarting compositor once");
+                    this.renderer.ResetNativeResourcesForCompositorRestart();
+                    NativeGpuProbe.Stop();
+                    this.nativeGpuStarted = false;
+                    this.nativeGpuStartAttempted = false;
+                    this.nativeGpuDisconnectedLogged = false;
+                    this.nativeGpuDisconnectedSince = DateTime.MinValue;
+                    this.nativeGpuRestartAttempted = true;
+                    continue;
                 }
                 if (this.useNativeGpu && !this.nativeGpuStartAttempted)
                 {

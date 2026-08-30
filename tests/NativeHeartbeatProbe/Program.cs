@@ -10,6 +10,16 @@ using System.Threading.Tasks;
 using ClickableTransparentOverlay;
 
 var assembly = typeof(Overlay).Assembly;
+var restartPolicyType = assembly.GetType("ClickableTransparentOverlay.NativeGpuRestartPolicy")
+    ?? throw new InvalidOperationException("NativeGpuRestartPolicy missing");
+var shouldRestartCompositor = restartPolicyType.GetMethod("ShouldRestart", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuRestartPolicy.ShouldRestart missing");
+if (!(bool)(shouldRestartCompositor.Invoke(null, new object[] { true, true, false, false, TimeSpan.FromSeconds(3) }) ?? false) ||
+    (bool)(shouldRestartCompositor.Invoke(null, new object[] { true, true, false, false, TimeSpan.FromSeconds(1) }) ?? true) ||
+    (bool)(shouldRestartCompositor.Invoke(null, new object[] { true, true, false, true, TimeSpan.FromSeconds(3) }) ?? true) ||
+    (bool)(shouldRestartCompositor.Invoke(null, new object[] { true, true, true, false, TimeSpan.FromSeconds(3) }) ?? true))
+    throw new InvalidOperationException("native compositor restart policy is not delayed and single-shot");
+
 var probeType = assembly.GetType("ClickableTransparentOverlay.NativeGpuProbe")
     ?? throw new InvalidOperationException("NativeGpuProbe missing");
 var prepareReconnect = probeType.GetMethod("PrepareReconnect", BindingFlags.Static | BindingFlags.NonPublic)
