@@ -22,6 +22,8 @@ grep -q 'GAMEHELPER2_OVERLAY_BACKEND' "$CTO/Overlay.cs" || fail "GameHelper2 bac
 grep -q 'GameHelper2.renderer.log' "$CTO/Overlay.cs" || fail "managed renderer diagnostics are missing"
 grep -q 'native GPU helper unavailable' "$CTO/Overlay.cs" || fail "native GPU startup does not fail closed"
 grep -q 'NativeGpu' "$CTO/Overlay.cs" || fail "GPU compositor is not integrated into Overlay"
+grep -q 'GAMEHELPER2_NATIVE_FPS_LIMIT' "$CTO/Overlay.cs" || fail "native GPU loop has no launcher-controlled frame limit"
+grep -q 'GAMEHELPER2_NATIVE_FPS_LIMIT' "$ROOT/run-gamehelper2-linux.sh" || fail "Linux launcher does not pass a native overlay frame limit"
 python3 - "$CTO/Overlay.cs" "$CTO/ImGuiRenderer.cs" <<'PY'
 import re
 import sys

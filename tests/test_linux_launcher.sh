@@ -18,8 +18,9 @@ make_fixture() {
 printf '%s\n' "$*" >> "$PROTON_CALLS"
 printf '%s\n' "$$" > "$PROTON_PID_FILE"
 if [[ -n "${PROTON_ENV_FILE:-}" ]]; then
-  printf 'backend=%s\nwined3d=%s\n' \
-    "${GAMEHELPER2_OVERLAY_BACKEND:-}" "${PROTON_USE_WINED3D:-}" > "$PROTON_ENV_FILE"
+  printf 'backend=%s\nwined3d=%s\nnative_fps=%s\n' \
+    "${GAMEHELPER2_OVERLAY_BACKEND:-}" "${PROTON_USE_WINED3D:-}" \
+    "${GAMEHELPER2_NATIVE_FPS_LIMIT:-}" > "$PROTON_ENV_FILE"
 fi
 if [[ -n "${PROTON_PWD_FILE:-}" ]]; then
   pwd > "$PROTON_PWD_FILE"
@@ -100,6 +101,35 @@ set -e
 [[ ! -s "$FIXTURE/proton-calls" ]] || fail "Proton was invoked while PoE2 was absent"
 
 printf 'PASS: refuses to launch helper while PoE2 is absent\n'
+
+# Native overlay frame limits must be canonical bounded decimal values; reject
+# leading-zero/octal and overflow-sized input before Proton is invoked.
+for invalid_limit in 08 241 18446744073709551616; do
+  rm -rf "$FIXTURE"
+  FIXTURE=""
+  make_fixture
+  mkdir -p "$FIXTURE/proc/3129"
+  printf 'Z:\\games\\PathOfExileSteam.exe\0' > "$FIXTURE/proc/3129/cmdline"
+  printf 'SteamAppId=2694490\0' > "$FIXTURE/proc/3129/environ"
+  set +e
+  output="$({
+    GH2_PROC_ROOT="$FIXTURE/proc" \
+    GAMEHELPER2_NATIVE_FPS_LIMIT="$invalid_limit" \
+    GAMEHELPER2_EXE="$FIXTURE/GameHelper.exe" \
+    STEAM_ROOT="$FIXTURE/steam" \
+    POE2_LIBRARY="$FIXTURE/library" \
+    PROTON="$FIXTURE/proton" \
+    PROTON_CALLS="$FIXTURE/proton-calls" \
+      "$LAUNCHER"
+  } 2>&1)"
+  status=$?
+  set -e
+  [[ $status -eq 2 ]] || fail "invalid native FPS limit $invalid_limit returned $status"
+  [[ "$output" == *"integer from 0 to 240"* ]] || fail "invalid native FPS limit lacked a clear error"
+  [[ ! -s "$FIXTURE/proton-calls" ]] || fail "Proton was invoked for invalid native FPS limit $invalid_limit"
+done
+
+printf 'PASS: rejects non-canonical and overflow-sized native FPS limits\n'
 
 # PoE1 uses the same Windows executable names. Require PoE2's Steam app
 # identity as well, otherwise a running PoE1 instance would be a false match.
@@ -237,6 +267,8 @@ grep -qx 'backend=native-gpu' "$FIXTURE/proton-env" || \
   fail "native GPU backend was not selected: $(cat "$FIXTURE/proton-env")"
 grep -qx 'wined3d=1' "$FIXTURE/proton-env" || \
   fail "helper-only WineD3D default was not selected: $(cat "$FIXTURE/proton-env")"
+grep -qx 'native_fps=30' "$FIXTURE/proton-env" || \
+  fail "native overlay FPS limit was not passed to GameHelper: $(cat "$FIXTURE/proton-env")"
 
 rm -rf "$FIXTURE/proc/4242"
 for _ in {1..100}; do

@@ -540,6 +540,7 @@
         private void RunInfiniteLoop(CancellationToken token)
         {
             var stopwatch = Stopwatch.StartNew();
+            var nativeGpuFrameLimitValue = Environment.GetEnvironmentVariable("GAMEHELPER2_NATIVE_FPS_LIMIT");
             var currentTimeSec = 0f;
             var clearColor = new Color4(0.0f);
             var delayMs = 0f;
@@ -597,7 +598,14 @@
                 }
                 if (this.nativeGpuStarted)
                 {
-                    if (VSync) Thread.Sleep(1);
+                    var nativeGpuFrameLimit = NativeGpuFramePacing.ResolveFrameLimit(nativeGpuFrameLimitValue, this.FPSLimit);
+                    sleepTimeMs = NativeGpuFramePacing.RemainingSleepMilliseconds(
+                        nativeGpuFrameLimit,
+                        stopwatch.ElapsedTicks * 1000.0 / Stopwatch.Frequency);
+                    if (sleepTimeMs > 0)
+                    {
+                        Thread.Sleep(sleepTimeMs);
+                    }
                 }
                 else if (VSync)
                 {

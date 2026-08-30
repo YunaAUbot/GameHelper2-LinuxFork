@@ -11,6 +11,24 @@ using System.Threading.Tasks;
 using ClickableTransparentOverlay;
 
 var assembly = typeof(Overlay).Assembly;
+var framePacingType = assembly.GetType("ClickableTransparentOverlay.NativeGpuFramePacing")
+    ?? throw new InvalidOperationException("NativeGpuFramePacing missing");
+var resolveFrameLimit = framePacingType.GetMethod("ResolveFrameLimit", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuFramePacing.ResolveFrameLimit missing");
+var remainingSleepMilliseconds = framePacingType.GetMethod("RemainingSleepMilliseconds", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("NativeGpuFramePacing.RemainingSleepMilliseconds missing");
+if ((int)(resolveFrameLimit.Invoke(null, new object?[] { "30", 60 }) ?? -1) != 30 ||
+    (int)(resolveFrameLimit.Invoke(null, new object?[] { "0", 60 }) ?? -1) != 0 ||
+    (int)(resolveFrameLimit.Invoke(null, new object?[] { "invalid", 60 }) ?? -1) != 60 ||
+    (int)(resolveFrameLimit.Invoke(null, new object?[] { "241", 60 }) ?? -1) != 60)
+    throw new InvalidOperationException("native GPU frame limit resolution is not bounded or deterministic");
+if ((int)(remainingSleepMilliseconds.Invoke(null, new object[] { 30, 5.0 }) ?? -1) is not (27 or 28) ||
+    (int)(remainingSleepMilliseconds.Invoke(null, new object[] { 30, 40.0 }) ?? -1) != 0 ||
+    (int)(remainingSleepMilliseconds.Invoke(null, new object[] { 0, 0.0 }) ?? -1) != 0 ||
+    (int)(remainingSleepMilliseconds.Invoke(null, new object[] { 30, double.NaN }) ?? -1) != 0 ||
+    (int)(remainingSleepMilliseconds.Invoke(null, new object[] { 30, -1.0 }) ?? -1) != 0)
+    throw new InvalidOperationException("native GPU frame pacing delay is incorrect");
+
 var disconnectPolicyType = assembly.GetType("ClickableTransparentOverlay.NativeGpuDisconnectPolicy")
     ?? throw new InvalidOperationException("NativeGpuDisconnectPolicy missing");
 var shouldWaitForReconnect = disconnectPolicyType.GetMethod("ShouldWaitForReconnect", BindingFlags.Static | BindingFlags.NonPublic)
