@@ -1,0 +1,29 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 03:17 UTC. Scheduled workflows run from the default branch.
+    - cron: '17 3 * * *'
+
+# The repository-scoped token may update only this fork's contents.
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+jobs:
+  merge-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork main
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream when conflict-free
+        shell: bash
+        run: .github/scripts/sync-upstream.sh
