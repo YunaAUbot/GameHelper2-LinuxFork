@@ -6,6 +6,34 @@ Path of Exile 2; "0.5.x" references are the game patch the build targets.
 Sections marked **For plugin devs** describe newly exposed APIs you can read
 from your own plugins via `Core.*`.
 
+## [2.7.2] - 2026-09-05
+
+### Changed
+
+- **Forbidden Rites economy defaults.** LootValue, LootTracker, and
+  RunecraftHelper now default to the current league and migrate saved untouched
+  Runes of Aldur defaults once, while preserving later explicit selections.
+
+### Fixed
+
+- **Radar in the Trial of the Sekhemas.** Legitimate large Trial terrain now
+  passes core validation, restoring walkable-map outlines while retaining an
+  exact tile-vector shape check against invalid offset data.
+- **Atlas2 Ritual prediction.** Updated the 0.5.5 Ritual stat-table IDs, reward
+  pool conditions, and shifted stats pointer chain used by the Head of the King
+  planner.
+- **Atlas2 font scaling.** Planner and map-label scaling no longer leaks into
+  GameHelper windows rendered later in the frame.
+
+## [2.7.1] - 2026-09-05
+
+### Added
+
+- **RitualWispAlert plugin.** Incorporated the former RitualHelper wisp-range
+  visualization under its own focused name. It draws only the configurable
+  Ritual wisp circle, imports existing RitualHelper circle settings, and leaves
+  Ritual reward pricing in LootValue.
+
 ## [2.7.0] - 2026-09-05
 
 ### Added
@@ -26,8 +54,12 @@ from your own plugins via `Core.*`.
   added a minimize control, and prevented plugin rendering over settings
   windows.
 - **Unified item pricing.** LootValue now prices ground, stash, inventory, and
-  Currency Exchange items, replacing the separate StashValueByZx0 plugin.
-  Existing stash display settings are imported on first run.
+  Ritual reward, and Currency Exchange items, replacing the separate
+  StashValueByZx0 and RitualHelper pricing implementations. Existing stash
+  display settings are imported on first run.
+- **RitualHelper retired.** The standalone plugin is no longer built or shipped;
+  Ritual reward values now use LootValue's maintained item pipeline. Its separate
+  Ritual wisp-range circle is not included in LootValue.
 - **Atlas2 content and routing expanded.** Added current content mappings,
   persistent fog-node data, mist nodes, Ritual-line tools, and Uncharted Waters
   ship and leyline visualization.
