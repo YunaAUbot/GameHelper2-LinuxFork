@@ -25,6 +25,7 @@
     <Compile Include="..\..\GameHelper\Plugin\Price\PriceQuery.cs" Link="HostContract\PriceQuery.cs" />
     <Compile Include="..\..\GameHelper\Plugin\Price\PriceQuote.cs" Link="HostContract\PriceQuote.cs" />
     <Compile Include="..\LootValue\LootValuePricingPass.cs" Link="Production\LootValuePricingPass.cs" />
+    <Compile Include="..\LootValue\IncrementalPanelScan.cs" Link="Production\IncrementalPanelScan.cs" />
     <Compile Include="..\LootValue\LootValueSettings.cs" Link="Production\LootValueSettings.cs" />
   </ItemGroup>
 

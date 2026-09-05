@@ -44,6 +44,16 @@ namespace LootValue
 
         // Loot-tag mode (anchors chips to the game's loot labels via a throttled UI-tree scan).
         private const int UiElementTextOffset = 0x390;
+        private const int SlotTraversalBudgetPerFrame = 64;
+        private const int SlotRectangleBudgetPerFrame = 8;
+        private const int SlotValidationBudgetPerFrame = 8;
+        private const int SlotPricingBudgetPerFrame = 8;
+        private static readonly int ScrollRectangleProbeBudgetPerFrame = ScrollProbePolicy.RequiredBudget(
+            SlotTraversalBudgetPerFrame,
+            3,
+            2,
+            2);
+        private const int MaxSlotTraversalElements = 5000;
         private readonly List<TagChip> cachedTagChips = new();
         private readonly Dictionary<IntPtr, Tracked> trackTag = new();
         private DateTime nextTagScanUtc = DateTime.MinValue;
@@ -57,11 +67,17 @@ namespace LootValue
         private readonly HashSet<string> groundTagNames = new(StringComparer.OrdinalIgnoreCase);
         private SlotScanReport leftSlotReport = new(IntPtr.Zero);
         private SlotScanReport rightSlotReport = new(IntPtr.Zero);
-        private List<SlotInfo> cachedLeftSlots = new();
-        private List<SlotInfo> cachedRightSlots = new();
+        private IReadOnlyList<SlotInfo> cachedLeftSlots = Array.Empty<SlotInfo>();
+        private IReadOnlyList<SlotInfo> cachedRightSlots = Array.Empty<SlotInfo>();
         private IntPtr cachedLeftPanelAddress;
         private IntPtr cachedRightPanelAddress;
         private DateTime nextSlotScanUtc = DateTime.MinValue;
+        private IncrementalPanelScan<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo>? leftSlotScan;
+        private IncrementalPanelScan<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo>? rightSlotScan;
+        private readonly IncrementalPanelScanScheduler<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo> slotScanScheduler = new();
+        private SlotScanContext? leftSlotScanContext;
+        private SlotScanContext? rightSlotScanContext;
+        private ScrollRectangleProbeBudget scrollRectangleProbeBudget;
         private readonly List<ExchangePriceLabel> cachedExchangeLabels = new();
         private DateTime nextExchangeScanUtc = DateTime.MinValue;
 
@@ -141,11 +157,7 @@ namespace LootValue
             this.readStdWStringMethod = null;
             this.readIntPtrMethod = null;
             this.groundTagNames.Clear();
-            this.cachedLeftSlots.Clear();
-            this.cachedRightSlots.Clear();
-            this.cachedLeftPanelAddress = IntPtr.Zero;
-            this.cachedRightPanelAddress = IntPtr.Zero;
-            this.nextSlotScanUtc = DateTime.MinValue;
+            this.ClearSlotScans();
             this.cachedExchangeLabels.Clear();
             this.nextExchangeScanUtc = DateTime.MinValue;
         }
@@ -214,7 +226,12 @@ namespace LootValue
         /// <inheritdoc/>
         public override void DrawUI()
         {
-            if (Core.States.GameCurrentState != GameStateTypes.InGameState) return;
+            this.scrollRectangleProbeBudget = new ScrollRectangleProbeBudget(ScrollRectangleProbeBudgetPerFrame);
+            if (Core.States.GameCurrentState != GameStateTypes.InGameState)
+            {
+                this.ClearSlotScans();
+                return;
+            }
             var pricing = LootValuePricingPass.Capture(() => PriceProviderRegistry.Current);
 
             if (this.Settings.DiagnosticsMode)
@@ -256,6 +273,10 @@ namespace LootValue
             if (this.Settings.ShowStashOverlay || this.Settings.ShowInventoryOverlay || this.Settings.ShowSlotDebugInfo)
             {
                 this.DrawItemSlotValues(pricing);
+            }
+            else
+            {
+                this.ClearSlotScans();
             }
 
             if (this.Settings.ShowCurrencyExchangeOverlay)
@@ -686,7 +707,11 @@ namespace LootValue
         private void DrawItemSlotValues(LootValuePricingPass pricing)
         {
             var gameUi = Core.States.InGameStateObject.GameUi;
-            if (gameUi.Address == IntPtr.Zero || !this.EnsureReflection()) return;
+            if (gameUi.Address == IntPtr.Zero || !this.EnsureReflection())
+            {
+                this.ClearSlotScans();
+                return;
+            }
 
             var scanLeft = this.Settings.ShowStashOverlay || this.Settings.ShowSlotDebugInfo;
             var scanRight = this.Settings.ShowInventoryOverlay || this.Settings.ShowSlotDebugInfo;
@@ -698,41 +723,47 @@ namespace LootValue
                 this.cachedLeftPanelAddress = leftAddress;
                 this.cachedRightPanelAddress = rightAddress;
                 this.nextSlotScanUtc = DateTime.MinValue;
+                this.RestartSlotScan(
+                    isLeft: true,
+                    leftAddress,
+                    gameUi.LeftPanel.Position,
+                    gameUi.LeftPanel.Size,
+                    pricing);
+                this.RestartSlotScan(
+                    isLeft: false,
+                    rightAddress,
+                    gameUi.RightPanel.Position,
+                    gameUi.RightPanel.Size,
+                    pricing);
             }
 
             var now = DateTime.UtcNow;
-            if (now >= this.nextSlotScanUtc)
+            this.EnsureSlotScanners();
+            var leftScan = this.leftSlotScan!;
+            var rightScan = this.rightSlotScan!;
+            var scansComplete = leftScan.IsComplete && rightScan.IsComplete;
+            if (scansComplete && now >= this.nextSlotScanUtc)
             {
-                this.nextSlotScanUtc = now.AddMilliseconds(Math.Clamp(this.Settings.SlotRescanIntervalMs, 100, 2000));
-                if (leftAddress != IntPtr.Zero)
-                {
-                    this.cachedLeftSlots = this.ScanItemSlots(
-                        pricing,
-                        leftAddress,
-                        gameUi.LeftPanel.Position,
-                        gameUi.LeftPanel.Size,
-                        out this.leftSlotReport);
-                }
-                else
-                {
-                    this.cachedLeftSlots.Clear();
-                    this.leftSlotReport = new SlotScanReport(IntPtr.Zero);
-                }
+                this.nextSlotScanUtc = DateTime.MinValue;
+                this.RestartSlotScan(true, leftAddress, gameUi.LeftPanel.Position, gameUi.LeftPanel.Size, pricing);
+                this.RestartSlotScan(false, rightAddress, gameUi.RightPanel.Position, gameUi.RightPanel.Size, pricing);
+            }
 
-                if (rightAddress != IntPtr.Zero)
-                {
-                    this.cachedRightSlots = this.ScanItemSlots(
-                        pricing,
-                        rightAddress,
-                        gameUi.RightPanel.Position,
-                        gameUi.RightPanel.Size,
-                        out this.rightSlotReport);
-                }
-                else
-                {
-                    this.cachedRightSlots.Clear();
-                    this.rightSlotReport = new SlotScanReport(IntPtr.Zero);
-                }
+            var budget = new PanelScanBudget(
+                SlotTraversalBudgetPerFrame,
+                SlotRectangleBudgetPerFrame,
+                SlotValidationBudgetPerFrame,
+                SlotPricingBudgetPerFrame);
+            this.slotScanScheduler.Advance(leftScan, rightScan, ref budget);
+            this.cachedLeftSlots = leftScan.Snapshot;
+            this.cachedRightSlots = rightScan.Snapshot;
+
+            if (this.nextSlotScanUtc == DateTime.MinValue &&
+                leftScan.IsComplete && rightScan.IsComplete)
+            {
+                this.leftSlotReport = this.leftSlotScanContext?.Report ?? new SlotScanReport(IntPtr.Zero);
+                this.rightSlotReport = this.rightSlotScanContext?.Report ?? new SlotScanReport(IntPtr.Zero);
+                this.nextSlotScanUtc = now.AddMilliseconds(Math.Clamp(this.Settings.SlotRescanIntervalMs, 100, 2000));
             }
 
             var leftScroll = GetScrollFrameState(this.cachedLeftSlots);
@@ -748,127 +779,164 @@ namespace LootValue
             }
         }
 
-        private List<SlotInfo> ScanItemSlots(
-            LootValuePricingPass pricing,
+        private void EnsureSlotScanners()
+        {
+            this.leftSlotScan ??= this.CreateSlotScanner(() => this.leftSlotScanContext);
+            this.rightSlotScan ??= this.CreateSlotScanner(() => this.rightSlotScanContext);
+        }
+
+        private void ClearSlotScans()
+        {
+            this.cachedLeftSlots = Array.Empty<SlotInfo>();
+            this.cachedRightSlots = Array.Empty<SlotInfo>();
+            this.cachedLeftPanelAddress = IntPtr.Zero;
+            this.cachedRightPanelAddress = IntPtr.Zero;
+            this.nextSlotScanUtc = DateTime.MinValue;
+            this.leftSlotScan?.Clear();
+            this.rightSlotScan?.Clear();
+            this.leftSlotScanContext = null;
+            this.rightSlotScanContext = null;
+            this.leftSlotReport = new SlotScanReport(IntPtr.Zero);
+            this.rightSlotReport = new SlotScanReport(IntPtr.Zero);
+        }
+
+        private IncrementalPanelScan<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo> CreateSlotScanner(
+            Func<SlotScanContext?> getContext) => new(
+                node => this.TraverseSlotNode(getContext(), node),
+                candidate => this.InspectSlotCandidate(getContext(), candidate),
+                work => this.ValidateSlotCandidate(getContext(), work),
+                work => this.PriceSlotCandidate(getContext(), work),
+                candidate => candidate.ItemAddress,
+                MaxSlotTraversalElements);
+
+        private void RestartSlotScan(
+            bool isLeft,
             IntPtr panelAddress,
             Vector2 panelPosition,
             Vector2 panelSize,
-            out SlotScanReport report)
+            LootValuePricingPass pricing)
         {
-            report = new SlotScanReport(panelAddress);
-            var candidatesByItem = new Dictionary<IntPtr, List<SlotElementCandidate>>();
-            if (panelAddress == IntPtr.Zero || this.readUiOffsetMethod == null ||
-                this.readStdVectorMethod == null || this.readIntPtrMethod == null) return new List<SlotInfo>();
-
-            var queue = new Queue<(IntPtr Address, IntPtr Parent, ScrollBinding Scroll)>();
-            var visited = new HashSet<IntPtr>();
-            queue.Enqueue((panelAddress, IntPtr.Zero, default));
-
-            while (queue.Count > 0 && visited.Count < 5000)
+            this.EnsureSlotScanners();
+            var scanner = isLeft ? this.leftSlotScan! : this.rightSlotScan!;
+            if (panelAddress == IntPtr.Zero)
             {
-                var (element, parent, scroll) = queue.Dequeue();
-                if (element == IntPtr.Zero || !visited.Add(element)) continue;
-                report.VisitedElements++;
-                if (this.readUiOffsetMethod.Invoke(this.handleObj, new object[] { element }) is not UiElementBaseOffset offset) continue;
-                if (!UiElementBaseFuncs.IsVisibleChecker(offset.Flags)) continue;
-
-                if (this.readStdVectorMethod.Invoke(this.handleObj, new object[] { offset.ChildrensPtr }) is IntPtr[] children)
-                {
-                    var hasScrollContainer = this.TryGetScrollContainer(
-                        children,
-                        out var scrollItemsAddress,
-                        out var localScroll);
-                    if (hasScrollContainer)
-                    {
-                        report.ScrollContainers++;
-                        report.ScrollOffsetY = localScroll.ScanOffsetY;
-                    }
-
-                    foreach (var child in children)
-                    {
-                        if (hasScrollContainer && child == scrollItemsAddress)
-                        {
-                            queue.Enqueue((child, element, localScroll));
-                        }
-                        else
-                        {
-                            queue.Enqueue((child, element, scroll));
-                        }
-                    }
-                }
-
-                // Slot discovery/rendering adapted from StashValueByZx0 by zx0CF1.
-                var pointerValue = this.readIntPtrMethod.Invoke(this.handleObj, new object[] { element + UiElementItemAddressOffset });
-                var itemAddress = pointerValue is IntPtr pointer ? pointer : IntPtr.Zero;
-                if (itemAddress == IntPtr.Zero) continue;
-                report.NonZeroPointers++;
-
-                if (!candidatesByItem.TryGetValue(itemAddress, out var itemCandidates))
-                {
-                    itemCandidates = new List<SlotElementCandidate>();
-                    candidatesByItem[itemAddress] = itemCandidates;
-                }
-
-                itemCandidates.Add(new SlotElementCandidate(element, parent, scroll));
+                scanner.Clear();
+                if (isLeft) this.leftSlotScanContext = null;
+                else this.rightSlotScanContext = null;
+                return;
             }
 
-            // Premium tabs expose many ghost UI copies. Deduplicate by item pointer before validating,
-            // constructing components, reading mods, or pricing so each real item pays those costs once.
-            report.UniquePointers = candidatesByItem.Count;
-            var panelMax = panelPosition + panelSize;
-            var slots = new List<SlotInfo>();
-            foreach (var (itemAddress, itemCandidates) in candidatesByItem)
-            {
-                var hasVisibleRect = false;
-                var position = Vector2.Zero;
-                var size = Vector2.Zero;
-                var selectedScroll = default(ScrollBinding);
-                var diagnosticElement = itemCandidates[0].ElementAddress;
-                foreach (var candidate in itemCandidates)
-                {
-                    if (!TryGetSlotRect(candidate, out var candidatePosition, out var candidateSize)) continue;
-                    var center = candidatePosition + (candidateSize * 0.5f);
-                    if (center.X < panelPosition.X || center.X > panelMax.X) continue;
-                    if (!candidate.Scroll.IsActive &&
-                        (center.Y < panelPosition.Y || center.Y > panelMax.Y)) continue;
-
-                    diagnosticElement = candidate.ElementAddress;
-                    position = candidatePosition;
-                    size = candidateSize;
-                    selectedScroll = candidate.Scroll;
-                    hasVisibleRect = true;
-                    break;
-                }
-
-                if (!hasVisibleRect) continue;
-                if (!PluginUiElementReflection.TryValidateItemAddress(itemAddress, out _, out var failureReason))
-                {
-                    report.AddRejected(diagnosticElement, itemAddress, failureReason);
-                    continue;
-                }
-
-                var item = ReadFreshItem(itemAddress);
-                if (item == null || string.IsNullOrEmpty(item.Path) ||
-                    !item.Path.StartsWith(ItemPathPrefix, StringComparison.OrdinalIgnoreCase))
-                {
-                    report.AddRejected(diagnosticElement, itemAddress, "item changed after validation");
-                    continue;
-                }
-
-                report.ValidItems++;
-                if (!this.TryPriceItem(pricing, item, out var valueEx, out var valueText, includeUniqueName: false) ||
-                    valueEx < this.Settings.MinValueEx) continue;
-                report.PricedCandidates++;
-
-                slots.Add(new SlotInfo(itemAddress, position, size, valueText, selectedScroll));
-            }
-
-            report.VisibleSlots = slots.Count;
-
-            return slots;
+            var context = new SlotScanContext(panelAddress, panelPosition, panelSize, pricing);
+            if (isLeft) this.leftSlotScanContext = context;
+            else this.rightSlotScanContext = context;
+            scanner.Restart(panelAddress, new SlotTraversalNode(panelAddress, IntPtr.Zero, default));
         }
 
-        private bool TryGetScrollContainer(
+        private PanelTraversalStep<SlotTraversalNode, SlotElementCandidate> TraverseSlotNode(
+            SlotScanContext? context,
+            SlotTraversalNode node)
+        {
+            if (context == null || node.Address == IntPtr.Zero ||
+                context.Visited.Count >= MaxSlotTraversalElements || context.Visited.Contains(node.Address) ||
+                this.readUiOffsetMethod == null || this.readStdVectorMethod == null || this.readIntPtrMethod == null)
+                return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(Array.Empty<SlotTraversalNode>());
+
+            if (this.readUiOffsetMethod.Invoke(this.handleObj, new object[] { node.Address }) is not UiElementBaseOffset offset ||
+                !UiElementBaseFuncs.IsVisibleChecker(offset.Flags))
+            {
+                context.Visited.Add(node.Address);
+                context.Report.VisitedElements++;
+                return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(Array.Empty<SlotTraversalNode>());
+            }
+
+            var childNodes = new List<SlotTraversalNode>();
+            if (this.readStdVectorMethod.Invoke(this.handleObj, new object[] { offset.ChildrensPtr }) is IntPtr[] children)
+            {
+                var scrollStatus = this.TryGetScrollContainer(children, out var scrollItemsAddress, out var localScroll);
+                if (scrollStatus == ScrollProbeStatus.Unavailable)
+                    return PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>.Deferred();
+                var hasScrollContainer = scrollStatus == ScrollProbeStatus.Succeeded;
+                if (hasScrollContainer)
+                {
+                    context.Report.ScrollContainers++;
+                    context.Report.ScrollOffsetY = localScroll.ScanOffsetY;
+                }
+
+                foreach (var child in children)
+                {
+                    if (childNodes.Count >= MaxSlotTraversalElements) break;
+                    childNodes.Add(new SlotTraversalNode(
+                        child,
+                        node.Address,
+                        hasScrollContainer && child == scrollItemsAddress ? localScroll : node.Scroll));
+                }
+            }
+
+            context.Visited.Add(node.Address);
+            context.Report.VisitedElements++;
+
+            var pointerValue = this.readIntPtrMethod.Invoke(this.handleObj, new object[] { node.Address + UiElementItemAddressOffset });
+            var itemAddress = pointerValue is IntPtr pointer ? pointer : IntPtr.Zero;
+            if (itemAddress == IntPtr.Zero)
+                return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(childNodes);
+
+            context.Report.NonZeroPointers++;
+            if (context.UniquePointers.Add(itemAddress)) context.Report.UniquePointers++;
+            return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(
+                childNodes,
+                new SlotElementCandidate(node.Address, node.ParentAddress, node.Scroll, itemAddress));
+        }
+
+        private PanelCandidateResult<SlotCandidateWork> InspectSlotCandidate(
+            SlotScanContext? context,
+            SlotElementCandidate candidate)
+        {
+            if (context == null) return PanelCandidateResult<SlotCandidateWork>.Rejected();
+            var panelMax = context.PanelPosition + context.PanelSize;
+            if (!TryGetSlotRect(candidate, out var position, out var size)) return PanelCandidateResult<SlotCandidateWork>.Rejected();
+            var center = position + (size * 0.5f);
+            if (center.X < context.PanelPosition.X || center.X > panelMax.X)
+                return PanelCandidateResult<SlotCandidateWork>.Rejected();
+            if (!candidate.Scroll.IsActive && (center.Y < context.PanelPosition.Y || center.Y > panelMax.Y))
+                return PanelCandidateResult<SlotCandidateWork>.Rejected();
+
+            return PanelCandidateResult<SlotCandidateWork>.Accepted(new SlotCandidateWork(candidate, position, size));
+        }
+
+        private bool ValidateSlotCandidate(SlotScanContext? context, SlotCandidateWork work)
+        {
+            if (context == null) return false;
+            if (!PluginUiElementReflection.TryValidateItemAddress(work.Candidate.ItemAddress, out _, out var failureReason))
+            {
+                context.Report.AddRejected(work.Candidate.ElementAddress, work.Candidate.ItemAddress, failureReason);
+                return false;
+            }
+
+            work.Item = ReadFreshItem(work.Candidate.ItemAddress);
+            if (work.Item == null || string.IsNullOrEmpty(work.Item.Path) ||
+                !work.Item.Path.StartsWith(ItemPathPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                context.Report.AddRejected(work.Candidate.ElementAddress, work.Candidate.ItemAddress, "item changed after validation");
+                return false;
+            }
+
+            context.Report.ValidItems++;
+            return true;
+        }
+
+        private PanelCandidateResult<SlotInfo> PriceSlotCandidate(SlotScanContext? context, SlotCandidateWork work)
+        {
+            if (context == null || work.Item == null ||
+                !this.TryPriceItem(context.Pricing, work.Item, out var valueEx, out var valueText, includeUniqueName: false) ||
+                valueEx < this.Settings.MinValueEx) return PanelCandidateResult<SlotInfo>.Rejected();
+
+            context.Report.PricedCandidates++;
+            context.Report.VisibleSlots++;
+            return PanelCandidateResult<SlotInfo>.Accepted(
+                new SlotInfo(work.Candidate.ItemAddress, work.Position, work.Size, valueText, work.Candidate.Scroll));
+        }
+
+        private ScrollProbeStatus TryGetScrollContainer(
             IntPtr[] children,
             out IntPtr itemsAddress,
             out ScrollBinding scroll)
@@ -876,19 +944,23 @@ namespace LootValue
             itemsAddress = IntPtr.Zero;
             scroll = default;
             if (children.Length <= 2 || children[1] == IntPtr.Zero || children[2] == IntPtr.Zero ||
-                this.readUiOffsetMethod == null || this.readStdVectorMethod == null) return false;
+                this.readUiOffsetMethod == null || this.readStdVectorMethod == null) return ScrollProbeStatus.NotApplicable;
 
             var contentAddress = children[1];
             var holderAddress = children[2];
             if (this.readUiOffsetMethod.Invoke(this.handleObj, new object[] { holderAddress }) is not UiElementBaseOffset holderOffset ||
                 !UiElementBaseFuncs.IsVisibleChecker(holderOffset.Flags) ||
                 this.readStdVectorMethod.Invoke(this.handleObj, new object[] { holderOffset.ChildrensPtr }) is not IntPtr[] holderChildren ||
-                holderChildren.Length == 0 || holderChildren[0] == IntPtr.Zero) return false;
+                holderChildren.Length == 0 || holderChildren[0] == IntPtr.Zero) return ScrollProbeStatus.NotApplicable;
 
             var thumbAddress = holderChildren[0];
-            if (!PluginUiElementReflection.TryGetAbsoluteRect(contentAddress, out var contentPosition, out var contentSize) ||
-                !PluginUiElementReflection.TryGetAbsoluteRect(holderAddress, out var holderPosition, out var holderSize) ||
-                !PluginUiElementReflection.TryGetAbsoluteRect(thumbAddress, out var thumbPosition, out var thumbSize)) return false;
+            if (this.scrollRectangleProbeBudget.TryReserve(3) == ScrollProbeStatus.Unavailable)
+                return ScrollProbeStatus.Unavailable;
+            var contentRead = PluginUiElementReflection.TryGetAbsoluteRect(contentAddress, out var contentPosition, out var contentSize);
+            var holderRead = PluginUiElementReflection.TryGetAbsoluteRect(holderAddress, out var holderPosition, out var holderSize);
+            var thumbRead = PluginUiElementReflection.TryGetAbsoluteRect(thumbAddress, out var thumbPosition, out var thumbSize);
+            if (ScrollProbePolicy.FromReadResults(contentRead, holderRead, thumbRead) == ScrollProbeStatus.Unavailable)
+                return ScrollProbeStatus.Unavailable;
 
             // Shape checks keep ordinary [1]/[2] child layouts from being mistaken for scroll views.
             if (holderSize.X < 4f || holderSize.X > 64f || holderSize.Y < 40f ||
@@ -896,11 +968,11 @@ namespace LootValue
                 thumbSize.Y < 8f || thumbSize.Y >= holderSize.Y ||
                 contentSize.Y <= holderSize.Y + 1f || holderPosition.X < contentPosition.X ||
                 thumbPosition.Y < holderPosition.Y - 2f ||
-                thumbPosition.Y + thumbSize.Y > holderPosition.Y + holderSize.Y + 2f) return false;
+                thumbPosition.Y + thumbSize.Y > holderPosition.Y + holderSize.Y + 2f) return ScrollProbeStatus.NotApplicable;
 
             var thumbTravel = holderSize.Y - thumbSize.Y;
             var contentOverflow = contentSize.Y - holderSize.Y;
-            if (thumbTravel <= 0f || contentOverflow <= 0f) return false;
+            if (thumbTravel <= 0f || contentOverflow <= 0f) return ScrollProbeStatus.NotApplicable;
 
             var progress = Math.Clamp((thumbPosition.Y - holderPosition.Y) / thumbTravel, 0f, 1f);
             itemsAddress = contentAddress;
@@ -911,7 +983,9 @@ namespace LootValue
                 progress * contentOverflow,
                 holderPosition.Y,
                 holderPosition.Y + holderSize.Y);
-            return float.IsFinite(scroll.ScanOffsetY) && scroll.ClipBottom > scroll.ClipTop;
+            return float.IsFinite(scroll.ScanOffsetY) && scroll.ClipBottom > scroll.ClipTop
+                ? ScrollProbeStatus.Succeeded
+                : ScrollProbeStatus.NotApplicable;
         }
 
         private static bool TryGetSlotRect(SlotElementCandidate candidate, out Vector2 position, out Vector2 size)
@@ -940,6 +1014,7 @@ namespace LootValue
             var mousePosition = ImGui.GetIO().MousePos;
             foreach (var slot in slots)
             {
+                if (!ScrollProbePolicy.CanUseLivePosition(slot.Scroll.IsActive, scroll.Status)) continue;
                 var position = GetLiveSlotPosition(slot, scroll);
                 var centerY = position.Y + (slot.Size.Y * 0.5f);
                 if (centerY < scroll.ClipTop || centerY > scroll.ClipBottom) continue;
@@ -953,16 +1028,25 @@ namespace LootValue
             return false;
         }
 
-        private static ScrollFrameState GetScrollFrameState(IReadOnlyList<SlotInfo> slots)
+        private ScrollFrameState GetScrollFrameState(IReadOnlyList<SlotInfo> slots)
         {
             foreach (var slot in slots)
             {
                 var binding = slot.Scroll;
                 if (!binding.IsActive) continue;
-                if (!PluginUiElementReflection.TryGetAbsoluteRect(binding.HolderAddress, out var holderPosition, out var holderSize) ||
-                    !PluginUiElementReflection.TryGetAbsoluteRect(binding.ThumbAddress, out var thumbPosition, out var thumbSize))
+                if (this.scrollRectangleProbeBudget.TryReserve(2) == ScrollProbeStatus.Unavailable)
+                    return ScrollFrameState.Unavailable(binding.HolderAddress);
+                var holderRead = PluginUiElementReflection.TryGetAbsoluteRect(
+                    binding.HolderAddress,
+                    out var holderPosition,
+                    out var holderSize);
+                var thumbRead = PluginUiElementReflection.TryGetAbsoluteRect(
+                    binding.ThumbAddress,
+                    out var thumbPosition,
+                    out var thumbSize);
+                if (ScrollProbePolicy.FromReadResults(holderRead, thumbRead) == ScrollProbeStatus.Unavailable)
                 {
-                    return new ScrollFrameState(binding.HolderAddress, 0f, binding.ClipTop, binding.ClipBottom);
+                    return ScrollFrameState.Unavailable(binding.HolderAddress);
                 }
 
                 var thumbTravel = holderSize.Y - thumbSize.Y;
@@ -1043,6 +1127,7 @@ namespace LootValue
 
             foreach (var slot in slots)
             {
+                if (!ScrollProbePolicy.CanUseLivePosition(slot.Scroll.IsActive, scroll.Status)) continue;
                 var position = GetLiveSlotPosition(slot, scroll);
                 var centerY = position.Y + (slot.Size.Y * 0.5f);
                 if (centerY < scroll.ClipTop || centerY > scroll.ClipBottom) continue;
@@ -1341,11 +1426,13 @@ namespace LootValue
             public SlotElementCandidate(
                 IntPtr elementAddress,
                 IntPtr parentAddress,
-                ScrollBinding scroll)
+                ScrollBinding scroll,
+                IntPtr itemAddress)
             {
                 this.ElementAddress = elementAddress;
                 this.ParentAddress = parentAddress;
                 this.Scroll = scroll;
+                this.ItemAddress = itemAddress;
             }
 
             public IntPtr ElementAddress { get; }
@@ -1353,6 +1440,58 @@ namespace LootValue
             public IntPtr ParentAddress { get; }
 
             public ScrollBinding Scroll { get; }
+
+            public IntPtr ItemAddress { get; }
+        }
+
+        private readonly record struct SlotTraversalNode(
+            IntPtr Address,
+            IntPtr ParentAddress,
+            ScrollBinding Scroll);
+
+        private sealed class SlotCandidateWork
+        {
+            public SlotCandidateWork(SlotElementCandidate candidate, Vector2 position, Vector2 size)
+            {
+                this.Candidate = candidate;
+                this.Position = position;
+                this.Size = size;
+            }
+
+            public SlotElementCandidate Candidate { get; }
+
+            public Vector2 Position { get; }
+
+            public Vector2 Size { get; }
+
+            public Item? Item { get; set; }
+        }
+
+        private sealed class SlotScanContext
+        {
+            public SlotScanContext(
+                IntPtr panelAddress,
+                Vector2 panelPosition,
+                Vector2 panelSize,
+                LootValuePricingPass pricing)
+            {
+                this.PanelPosition = panelPosition;
+                this.PanelSize = panelSize;
+                this.Pricing = pricing;
+                this.Report = new SlotScanReport(panelAddress);
+            }
+
+            public Vector2 PanelPosition { get; }
+
+            public Vector2 PanelSize { get; }
+
+            public LootValuePricingPass Pricing { get; }
+
+            public SlotScanReport Report { get; }
+
+            public HashSet<IntPtr> Visited { get; } = new();
+
+            public HashSet<IntPtr> UniquePointers { get; } = new();
         }
 
         private readonly struct ScrollBinding
@@ -1394,15 +1533,34 @@ namespace LootValue
                 IntPtr.Zero,
                 0f,
                 float.NegativeInfinity,
-                float.PositiveInfinity);
+                float.PositiveInfinity,
+                ScrollProbeStatus.NotApplicable);
 
             public ScrollFrameState(IntPtr holderAddress, float offsetDeltaY, float clipTop, float clipBottom)
+                : this(holderAddress, offsetDeltaY, clipTop, clipBottom, ScrollProbeStatus.Succeeded)
+            {
+            }
+
+            private ScrollFrameState(
+                IntPtr holderAddress,
+                float offsetDeltaY,
+                float clipTop,
+                float clipBottom,
+                ScrollProbeStatus status)
             {
                 this.HolderAddress = holderAddress;
                 this.OffsetDeltaY = offsetDeltaY;
                 this.ClipTop = clipTop;
                 this.ClipBottom = clipBottom;
+                this.Status = status;
             }
+
+            public static ScrollFrameState Unavailable(IntPtr holderAddress) => new(
+                holderAddress,
+                0f,
+                float.PositiveInfinity,
+                float.NegativeInfinity,
+                ScrollProbeStatus.Unavailable);
 
             public IntPtr HolderAddress { get; }
 
@@ -1411,6 +1569,8 @@ namespace LootValue
             public float ClipTop { get; }
 
             public float ClipBottom { get; }
+
+            public ScrollProbeStatus Status { get; }
         }
 
         private sealed class SlotScanReport
