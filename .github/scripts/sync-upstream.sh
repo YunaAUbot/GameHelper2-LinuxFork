@@ -20,6 +20,7 @@ git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
 upstream_ref="upstream/$upstream_branch"
 upstream_head=$(git rev-parse "$upstream_ref")
+upstream_owned_paths=(Plugins/LootValue)
 base_ref="refs/remotes/origin/$sync_base_branch"
 if git fetch --no-tags origin "$sync_base_branch:$base_ref" 2>/dev/null; then
   upstream_base=$(git rev-parse "$base_ref")
@@ -27,11 +28,54 @@ else
   upstream_base=''
 fi
 
+restore_upstream_owned_paths() {
+  local path
+  for path in "${upstream_owned_paths[@]}"; do
+    if git cat-file -e "$upstream_ref:$path" 2>/dev/null; then
+      git restore --source="$upstream_ref" --staged --worktree -- "$path"
+    else
+      git rm -r --ignore-unmatch -- "$path"
+    fi
+  done
+}
+
+resolve_upstream_owned_conflicts() {
+  local conflicts=()
+  mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+  [[ ${#conflicts[@]} -gt 0 ]] || return 1
+
+  local path owned
+  for path in "${conflicts[@]}"; do
+    owned=0
+    for owned_path in "${upstream_owned_paths[@]}"; do
+      if [[ "$path" == "$owned_path" || "$path" == "$owned_path/"* ]]; then
+        owned=1
+        break
+      fi
+    done
+    [[ "$owned" -eq 1 ]] || return 1
+  done
+
+  echo 'Resolving conflicts in upstream-owned plugin trees from upstream.'
+  restore_upstream_owned_paths
+}
+
 if git merge-base --is-ancestor "$upstream_ref" HEAD; then
   echo 'Fork already contains the current upstream head.'
+  restore_upstream_owned_paths
+  if ! git diff --cached --quiet; then
+    git commit -m 'Restore upstream-owned plugin snapshots'
+  fi
 else
   if git merge-base HEAD "$upstream_ref" >/dev/null; then
-    git merge --no-ff --no-edit "$upstream_ref"
+    if ! git merge --no-ff --no-commit "$upstream_ref"; then
+      if ! resolve_upstream_owned_conflicts; then
+        echo '::error::Upstream overlaps fork-owned changes; no files were pushed.'
+        exit 1
+      fi
+    fi
+    restore_upstream_owned_paths
+    git commit --no-edit
   else
     if [[ -z "$upstream_base" ]]; then
       echo '::error::Upstream history was rewritten before a durable sync base existed; no files were pushed.'
@@ -43,9 +87,12 @@ else
     trap 'rm -f "$patch_file"' EXIT
     git diff --binary "$upstream_base" "$upstream_head" -- . > "$patch_file"
     if [[ -s "$patch_file" ]] && ! git apply --3way --index "$patch_file"; then
-      echo '::error::Rewritten upstream overlaps fork changes; no files were pushed.'
-      exit 1
+      if ! resolve_upstream_owned_conflicts; then
+        echo '::error::Rewritten upstream overlaps fork-owned changes; no files were pushed.'
+        exit 1
+      fi
     fi
+    restore_upstream_owned_paths
     if ! git diff --cached --quiet; then
       git commit -m 'Sync rewritten upstream snapshot'
     fi

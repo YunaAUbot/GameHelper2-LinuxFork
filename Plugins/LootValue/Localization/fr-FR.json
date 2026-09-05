@@ -1,5 +1,6 @@
 {
   "plugin.description": "Affiche la valeur des objets au sol, dans le coffre et dans l'inventaire.",
+  "button.refresh_prices_now": "Actualiser les prix maintenant",
   "currency.chaos": "Chaos",
   "currency.divine": "Divin",
   "currency.exalted": "Exalté",
@@ -13,6 +14,7 @@
   "diagnostics.summary.pricing": "priced={0} BelowFloor(<{1}ex)={2} dessinerait={3}",
   "diagnostics.window_title": "Diagnostic de la valeur du butin",
   "section.display": "Afficher",
+  "section.price_source": "Source de prix",
   "settings.anchor_to_loot_tags": "Ancrage aux étiquettes de butin (pas de chevauchement lorsque les objets s'empilent)",
   "settings.diagnostics_window": "Fenêtre de diagnostic",
   "settings.font_size": "Taille de la police",
@@ -22,12 +24,16 @@
   "settings.highlight_from": "Highlight de (ex)",
   "settings.hide_when_game_unfocused": "Masquer les valeurs lorsque le jeu n’est pas au premier plan",
   "settings.jitter_filter": "Filtre de gigue (inférieur = plus fort, pas de décalage)",
+  "settings.league": "Ligue",
   "settings.min_value_to_show": "Valeur minimale à afficher (ex)",
+  "settings.refresh_interval": "Intervalle de rafraîchissement (min)",
   "settings.rescan_interval": "Intervalle de nouvelle analyse (ms)",
   "settings.rescan_interval.tooltip": "Les positions redessinent chaque image ; la nouvelle analyse ne redétecte que les articles/prix.",
   "settings.reveal_unidentified_uniques": "Révéler des objets uniques non identifiés (par l'art)",
   "settings.show_overlay": "Afficher la valeur des éléments au sol",
   "settings.smooth_label_motion": "Mouvement fluide de l'étiquette (suivi de la vitesse)",
   "settings.text_color": "Couleur du texte",
-  "settings.vertical_offset": "Décalage vertical"
+  "settings.vertical_offset": "Décalage vertical",
+  "status.loaded_items": "{0} articles | il y a {1} minutes",
+  "status.loading": "Chargement..."
 }

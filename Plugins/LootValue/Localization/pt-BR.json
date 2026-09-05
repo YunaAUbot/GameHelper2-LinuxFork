@@ -1,5 +1,6 @@
 {
   "plugin.description": "Mostra o valor de mercado de itens no chão, baú e inventário.",
+  "button.refresh_prices_now": "Atualizar preços agora",
   "currency.chaos": "Caos",
   "currency.divine": "Divino",
   "currency.exalted": "Exaltado",
@@ -13,6 +14,7 @@
   "diagnostics.summary.pricing": "preço={0} abaixo do piso(<{1}ex)={2} sortearia={3}",
   "diagnostics.window_title": "Diagnóstico de LootValue",
   "section.display": "Mostrar",
+  "section.price_source": "Fonte de preço",
   "settings.anchor_to_loot_tags": "Âncora para rótulos de saque (sem sobreposição quando os itens se acumulam)",
   "settings.diagnostics_window": "Janela de diagnóstico",
   "settings.font_size": "Tamanho da fonte",
@@ -22,12 +24,16 @@
   "settings.highlight_from": "Destaque de (ex)",
   "settings.hide_when_game_unfocused": "Ocultar valores quando o jogo não estiver em foco",
   "settings.jitter_filter": "Filtro de jitter (menor = mais forte, sem atraso)",
+  "settings.league": "Liga",
   "settings.min_value_to_show": "Valor mínimo a ser exibido (ex)",
+  "settings.refresh_interval": "Intervalo de atualização (min)",
   "settings.rescan_interval": "Intervalo de nova varredura (ms)",
   "settings.rescan_interval.tooltip": "As posições redesenham cada quadro; A nova verificação apenas detecta novamente itens/preços.",
   "settings.reveal_unidentified_uniques": "Revelar itens únicos não identificados (por arte)",
   "settings.show_overlay": "Mostrar valor sobre itens básicos",
   "settings.smooth_label_motion": "Movimento suave da etiqueta (rastreamento de velocidade)",
   "settings.text_color": "Cor do texto",
-  "settings.vertical_offset": "Deslocamento vertical"
+  "settings.vertical_offset": "Deslocamento vertical",
+  "status.loaded_items": "{0} itens | {1} minutos atrás",
+  "status.loading": "Carregando..."
 }

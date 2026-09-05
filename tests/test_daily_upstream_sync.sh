@@ -44,7 +44,10 @@ git init -q -b main "$upstream_work"
 git -C "$upstream_work" config user.name test
 git -C "$upstream_work" config user.email test@example.invalid
 printf 'base\n' > "$upstream_work/shared.txt"
+mkdir -p "$upstream_work/Plugins/LootValue"
+printf 'upstream-owned base\n' > "$upstream_work/Plugins/LootValue/owned.txt"
 git -C "$upstream_work" add shared.txt
+git -C "$upstream_work" add Plugins/LootValue/owned.txt
 git -C "$upstream_work" commit -qm base
 git -C "$upstream_work" remote add origin "$upstream_bare"
 git -C "$upstream_work" push -q -u origin main
@@ -99,6 +102,31 @@ base_head=$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base
 [[ "$base_head" == "$upstream_head" ]] || { echo 'FAIL: durable upstream base not advanced' >&2; exit 1; }
 git --git-dir="$origin_bare" show refs/heads/main:upstream.txt | grep -qx 'upstream change'
 git --git-dir="$origin_bare" show refs/heads/main:.github/workflows/local.txt | grep -qx 'fork workflow'
+
+# The bundled LootValue tree is upstream-owned. A local conflict there must
+# resolve to the exact upstream content instead of blocking every later sync.
+git -C "$upstream_work" pull -q --ff-only
+printf 'upstream-owned update\n' > "$upstream_work/Plugins/LootValue/owned.txt"
+git -C "$upstream_work" add Plugins/LootValue/owned.txt
+git -C "$upstream_work" commit -qm 'update upstream-owned plugin'
+git -C "$upstream_work" push -q
+
+git -C "$runner" fetch -q origin main
+git -C "$runner" reset -q --hard origin/main
+printf 'fork-local conflicting update\n' > "$runner/Plugins/LootValue/owned.txt"
+git -C "$runner" add Plugins/LootValue/owned.txt
+git -C "$runner" -c user.name=test -c user.email=test@example.invalid commit -qm 'conflict in upstream-owned plugin'
+git -C "$runner" push -q origin HEAD:main
+(
+  cd "$runner"
+  UPSTREAM_URL="$upstream_bare" \
+  UPSTREAM_BRANCH=main \
+  TARGET_BRANCH=main \
+  SYNC_BASE_BRANCH=upstream-sync-base \
+  HOME="$sandbox/empty-home" \
+    "$sync_script"
+)
+git --git-dir="$origin_bare" show refs/heads/main:Plugins/LootValue/owned.txt | grep -qx 'upstream-owned update'
 
 # A conflicting upstream/fork edit must fail without changing origin/main.
 git -C "$upstream_work" pull -q --ff-only

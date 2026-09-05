@@ -14,7 +14,6 @@ namespace LootValue
     using System.Text.RegularExpressions;
     using GameHelper;
     using GameHelper.Plugin;
-    using GameHelper.Plugin.Price;
     using GameHelper.RemoteEnums;
     using GameHelper.RemoteObjects.Components;
     using GameHelper.RemoteObjects.States.InGameStateObjects;
@@ -25,14 +24,22 @@ namespace LootValue
     using Newtonsoft.Json.Linq;
 
     /// <summary>
-    ///     LootValue plugin — prices ground, stash, and inventory items and draws their values in context.
-    ///     Unidentified uniques are revealed by name via their icon art (same bridge as RitualHelper).
+    ///     LootValue plugin — prices ground, stash, inventory, Ritual reward, and Currency Exchange items.
+    ///     Unidentified uniques are revealed by name via their icon art.
     /// </summary>
     public sealed class LootValueCore : PCore<LootValueSettings>
     {
+        /// <inheritdoc/>
+        public override IReadOnlyCollection<string> ConflictsWith => new[] { "RitualHelper" };
+
+        /// <inheritdoc/>
+        public override int ConflictPriority => 100;
+
         private const string ItemPathPrefix = "Metadata/Items";
-        private const int UiElementItemAddressOffset = 0x4F8;
+        // PoE 0.5.5 shifted the UiElement tail (including the slot item pointer) by -0x18.
+        private const int UiElementItemAddressOffset = 0x4E0;
         private static readonly int[] CurrencyExchangeRootPath = { 114, 20, 6 };
+        private static readonly int[] RitualRewardGridPath = { 76, 13 };
 
         private readonly List<LootLabel> cachedLabels = new();
         private readonly Dictionary<uint, Tracked> trackWorld = new();
@@ -43,17 +50,9 @@ namespace LootValue
         private DateTime nextDiagUtc = DateTime.MinValue;
 
         // Loot-tag mode (anchors chips to the game's loot labels via a throttled UI-tree scan).
-        private const int UiElementTextOffset = 0x390;
-        private const int SlotTraversalBudgetPerFrame = 64;
-        private const int SlotRectangleBudgetPerFrame = 8;
-        private const int SlotValidationBudgetPerFrame = 8;
-        private const int SlotPricingBudgetPerFrame = 8;
-        private static readonly int ScrollRectangleProbeBudgetPerFrame = ScrollProbePolicy.RequiredBudget(
-            SlotTraversalBudgetPerFrame,
-            3,
-            2,
-            2);
-        private const int MaxSlotTraversalElements = 5000;
+        // PoE 0.5.5 moved inline text-element wstrings by -0x30: UiElementBase lost 0x18 and
+        // the derived text class lost another 0x18. Verified live by RunecraftHelper as well.
+        private const int UiElementTextOffset = 0x360;
         private readonly List<TagChip> cachedTagChips = new();
         private readonly Dictionary<IntPtr, Tracked> trackTag = new();
         private DateTime nextTagScanUtc = DateTime.MinValue;
@@ -67,17 +66,14 @@ namespace LootValue
         private readonly HashSet<string> groundTagNames = new(StringComparer.OrdinalIgnoreCase);
         private SlotScanReport leftSlotReport = new(IntPtr.Zero);
         private SlotScanReport rightSlotReport = new(IntPtr.Zero);
-        private IReadOnlyList<SlotInfo> cachedLeftSlots = Array.Empty<SlotInfo>();
-        private IReadOnlyList<SlotInfo> cachedRightSlots = Array.Empty<SlotInfo>();
+        private SlotScanReport ritualSlotReport = new(IntPtr.Zero);
+        private List<SlotInfo> cachedLeftSlots = new();
+        private List<SlotInfo> cachedRightSlots = new();
+        private List<SlotInfo> cachedRitualSlots = new();
         private IntPtr cachedLeftPanelAddress;
         private IntPtr cachedRightPanelAddress;
+        private IntPtr cachedRitualGridAddress;
         private DateTime nextSlotScanUtc = DateTime.MinValue;
-        private IncrementalPanelScan<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo>? leftSlotScan;
-        private IncrementalPanelScan<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo>? rightSlotScan;
-        private readonly IncrementalPanelScanScheduler<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo> slotScanScheduler = new();
-        private SlotScanContext? leftSlotScanContext;
-        private SlotScanContext? rightSlotScanContext;
-        private ScrollRectangleProbeBudget scrollRectangleProbeBudget;
         private readonly List<ExchangePriceLabel> cachedExchangeLabels = new();
         private DateTime nextExchangeScanUtc = DateTime.MinValue;
 
@@ -107,6 +103,8 @@ namespace LootValue
                 this.SaveSettings();
             }
 
+            PoeNinjaPriceFetcher.Configure(this.Settings.PriceSource, this.Settings.League ?? string.Empty, this.Settings.RefreshIntervalMin);
+            PoeNinjaPriceFetcher.Initialize(this.DllDirectory);
         }
 
         private bool TryMigrateStashValueSettings()
@@ -157,7 +155,13 @@ namespace LootValue
             this.readStdWStringMethod = null;
             this.readIntPtrMethod = null;
             this.groundTagNames.Clear();
-            this.ClearSlotScans();
+            this.cachedLeftSlots.Clear();
+            this.cachedRightSlots.Clear();
+            this.cachedRitualSlots.Clear();
+            this.cachedLeftPanelAddress = IntPtr.Zero;
+            this.cachedRightPanelAddress = IntPtr.Zero;
+            this.cachedRitualGridAddress = IntPtr.Zero;
+            this.nextSlotScanUtc = DateTime.MinValue;
             this.cachedExchangeLabels.Clear();
             this.nextExchangeScanUtc = DateTime.MinValue;
         }
@@ -183,12 +187,13 @@ namespace LootValue
             ImGui.Checkbox(this.PluginText.Label("settings.anchor_to_loot_tags", "Anchor to loot labels (no overlap when items pile up)", "LootValueAnchorToLootTags"), ref this.Settings.AnchorToLootTags);
             ImGui.Checkbox(this.PluginText.Label("settings.show_stash_overlay", "Show value over stash items", "LootValueShowStashOverlay"), ref this.Settings.ShowStashOverlay);
             ImGui.Checkbox(this.PluginText.Label("settings.show_inventory_overlay", "Show value over inventory items", "LootValueShowInventoryOverlay"), ref this.Settings.ShowInventoryOverlay);
+            ImGui.Checkbox(this.PluginText.Label("settings.show_ritual_overlay", "Show value over Ritual rewards", "LootValueShowRitualOverlay"), ref this.Settings.ShowRitualOverlay);
             ImGui.Checkbox(this.PluginText.Label("settings.show_currency_exchange_overlay", "Show owned-stack values in Currency Exchange", "LootValueShowCurrencyExchangeOverlay"), ref this.Settings.ShowCurrencyExchangeOverlay);
             ImGui.Checkbox(this.PluginText.Label("settings.hide_when_game_unfocused", "Hide values when game is not focused", "LootValueHideWhenGameUnfocused"), ref this.Settings.HideWhenGameInBackground);
-            ImGui.Checkbox(this.PluginText.Label("settings.hide_slot_prices_on_hover", "Hide stash/inventory values while hovering an item", "LootValueHideSlotPricesOnHover"), ref this.Settings.HideSlotPricesOnHover);
+            ImGui.Checkbox(this.PluginText.Label("settings.hide_slot_prices_on_hover", "Hide item-panel values while hovering an item", "LootValueHideSlotPricesOnHover"), ref this.Settings.HideSlotPricesOnHover);
             ImGui.Checkbox(this.PluginText.Label("settings.reveal_unidentified_uniques", "Reveal unidentified uniques (by art)", "LootValueRevealUnidentifiedUniques"), ref this.Settings.RevealUnidentifiedUniques);
             ImGui.Checkbox(this.PluginText.Label("settings.diagnostics_window", "Diagnostics window", "LootValueDiagnosticsWindow"), ref this.Settings.DiagnosticsMode);
-            ImGui.Checkbox(this.PluginText.Label("settings.slot_diagnostics", "Stash/inventory slot diagnostics", "LootValueSlotDiagnostics"), ref this.Settings.ShowSlotDebugInfo);
+            ImGui.Checkbox(this.PluginText.Label("settings.slot_diagnostics", "Item-panel slot diagnostics", "LootValueSlotDiagnostics"), ref this.Settings.ShowSlotDebugInfo);
 
             ImGui.Separator();
             ImGui.Text(this.PluginText.T("section.display", "Display"));
@@ -221,22 +226,45 @@ namespace LootValue
             ImGui.ColorEdit4(this.PluginText.Label("settings.text_color", "Text color", "LootValueTextColor"), ref this.Settings.TextColor);
             ImGui.ColorEdit4(this.PluginText.Label("settings.highlight_color", "Highlight color", "LootValueHighlightColor"), ref this.Settings.HighlightColor);
 
+            ImGui.Separator();
+            ImGui.Text(this.PluginText.T("section.price_source", "Price source"));
+            if (ImGui.RadioButton("poe2scout", this.Settings.PriceSource == PoeNinjaPriceFetcher.SourcePoe2Scout))
+                this.Settings.PriceSource = PoeNinjaPriceFetcher.SourcePoe2Scout;
+            ImGui.SameLine();
+            if (ImGui.RadioButton("poe.ninja", this.Settings.PriceSource == PoeNinjaPriceFetcher.SourcePoeNinja))
+                this.Settings.PriceSource = PoeNinjaPriceFetcher.SourcePoeNinja;
+
+            ImGui.InputText(this.PluginText.Label("settings.league", "League", "LootValueLeague"), ref this.Settings.League, 64);
+            ImGui.SliderInt(this.PluginText.Label("settings.refresh_interval", "Refresh interval (min)", "LootValueRefreshInterval"), ref this.Settings.RefreshIntervalMin, 1, 120);
+            if (ImGui.Button(this.PluginText.Label("button.refresh_prices_now", "Refresh prices now", "LootValueRefreshPricesNow")))
+            {
+                PoeNinjaPriceFetcher.Configure(this.Settings.PriceSource, this.Settings.League ?? string.Empty, this.Settings.RefreshIntervalMin);
+                PoeNinjaPriceFetcher.ForceRefresh(this.DllDirectory, ignoreCooldown: true);
+            }
+
+            ImGui.SameLine();
+            if (PoeNinjaPriceFetcher.IsFetching)
+            {
+                ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.2f, 1f), this.PluginText.T("status.loading", "Loading..."));
+            }
+            else if (PoeNinjaPriceFetcher.LastFetchUtc > DateTime.MinValue)
+            {
+                var mins = Math.Max(0, (int)(DateTime.UtcNow - PoeNinjaPriceFetcher.LastFetchUtc).TotalMinutes);
+                ImGui.TextColored(new Vector4(0.5f, 0.8f, 0.5f, 1f), this.PluginText.F("status.loaded_items", "{0} items | {1} min ago", PoeNinjaPriceFetcher.LoadedItemCount, mins));
+            }
         }
 
         /// <inheritdoc/>
         public override void DrawUI()
         {
-            this.scrollRectangleProbeBudget = new ScrollRectangleProbeBudget(ScrollRectangleProbeBudgetPerFrame);
-            if (Core.States.GameCurrentState != GameStateTypes.InGameState)
-            {
-                this.ClearSlotScans();
-                return;
-            }
-            var pricing = LootValuePricingPass.Capture(() => PriceProviderRegistry.Current);
+            if (Core.States.GameCurrentState != GameStateTypes.InGameState) return;
+
+            PoeNinjaPriceFetcher.Configure(this.Settings.PriceSource, this.Settings.League ?? string.Empty, this.Settings.RefreshIntervalMin);
+            PoeNinjaPriceFetcher.RefreshIfNeeded();
 
             if (this.Settings.DiagnosticsMode)
             {
-                this.RunDiagnostics(pricing);
+                this.RunDiagnostics();
                 this.DrawDiagnosticsWindow();
             }
 
@@ -253,7 +281,7 @@ namespace LootValue
                     if (now >= this.nextTagScanUtc)
                     {
                         this.nextTagScanUtc = now.AddMilliseconds(Math.Max(16, this.Settings.RescanIntervalMs));
-                        this.ScanLootTags(pricing);
+                        this.ScanLootTags();
                     }
 
                     this.DrawTagChips();
@@ -264,29 +292,26 @@ namespace LootValue
                 if (now >= this.nextRecomputeUtc)
                 {
                     this.nextRecomputeUtc = now.AddMilliseconds(Math.Max(16, this.Settings.RescanIntervalMs));
-                    this.RecomputeLabels(pricing);
+                    this.RecomputeLabels();
                 }
 
                 this.DrawLabels();
             }
 
-            if (this.Settings.ShowStashOverlay || this.Settings.ShowInventoryOverlay || this.Settings.ShowSlotDebugInfo)
+            if (this.Settings.ShowStashOverlay || this.Settings.ShowInventoryOverlay ||
+                this.Settings.ShowRitualOverlay || this.Settings.ShowSlotDebugInfo)
             {
-                this.DrawItemSlotValues(pricing);
-            }
-            else
-            {
-                this.ClearSlotScans();
+                this.DrawItemSlotValues();
             }
 
             if (this.Settings.ShowCurrencyExchangeOverlay)
             {
-                this.DrawCurrencyExchangeValues(pricing);
+                this.DrawCurrencyExchangeValues();
             }
         }
 
         /// <summary>Re-reads + reprices every ground item; throttled. The drawn position is updated live each frame.</summary>
-        private void RecomputeLabels(LootValuePricingPass pricing)
+        private void RecomputeLabels()
         {
             this.cachedLabels.Clear();
 
@@ -301,7 +326,7 @@ namespace LootValue
                 var item = ReadFreshItem(worldItem.ItemEntityAddress);
                 if (item == null) continue;
 
-                if (!this.TryPriceItem(pricing, item, out var valueEx, out var label)) continue;
+                if (!this.TryPriceItem(item, out var valueEx, out var label)) continue;
                 if (valueEx < this.Settings.MinValueEx) continue;
 
                 var highlight = valueEx >= this.Settings.HighlightMinEx;
@@ -405,10 +430,10 @@ namespace LootValue
 
         /// <summary>BFS the visible UI tree; any text element that prices as a loot drop becomes a chip
         /// anchored to that element. Throttled; the element's live rect is re-read each frame when drawing.</summary>
-        private void ScanLootTags(LootValuePricingPass pricing)
+        private void ScanLootTags()
         {
             this.cachedTagChips.Clear();
-            this.RefreshGroundTagNames(pricing);
+            this.RefreshGroundTagNames();
             var gameUi = Core.States.InGameStateObject.GameUi;
             var root = gameUi.Address;
             var leftPanel = gameUi.LeftPanel.Address;
@@ -438,7 +463,7 @@ namespace LootValue
                 var firstLine = text.Split('\n')[0].Trim();
                 if (firstLine.Length < 3) continue;
 
-                if (this.TryPriceTagText(pricing, firstLine, out var chipText, out var color, out var highlight))
+                if (this.TryPriceTagText(firstLine, out var chipText, out var color, out var highlight))
                 {
                     this.cachedTagChips.Add(new TagChip(el, chipText, color, highlight));
                 }
@@ -453,7 +478,7 @@ namespace LootValue
             }
         }
 
-        private bool TryPriceTagText(LootValuePricingPass pricing, string text, out string chipText, out uint color, out bool highlight)
+        private bool TryPriceTagText(string text, out string chipText, out uint color, out bool highlight)
         {
             chipText = string.Empty;
             color = 0;
@@ -472,12 +497,15 @@ namespace LootValue
             if (name.Length < 3) return false;
             if (!this.groundTagNames.Contains(name)) return false;
 
-            var query = CreateQuery(name, Array.Empty<string>(), string.Empty, string.Empty, text);
-            if (!pricing.TryPrice(query, Math.Max(1, count), this.Settings.DisplayCurrency, out var price)) return false;
-            var exVal = (double)price.ExaltedValue;
+            var price = PoeNinjaPriceFetcher.GetPrice(name);
+            if (price == null) return false;
+
+            var priced = new PoeNinjaPrice { PriceChaos = price.PriceChaos * Math.Max(1, count) };
+            var (exVal, _) = PoeNinjaPriceFetcher.GetDisplayPrice(priced, 1);
             if (exVal < this.Settings.MinValueEx) return false;
 
-            chipText = price.Text;
+            var (disp, cur) = PoeNinjaPriceFetcher.GetDisplayPrice(priced, this.Settings.DisplayCurrency);
+            chipText = FormatValue(disp, cur);
             highlight = exVal >= this.Settings.HighlightMinEx;
             color = ImGui.ColorConvertFloat4ToU32(highlight ? this.Settings.HighlightColor : this.Settings.TextColor);
             return true;
@@ -536,7 +564,7 @@ namespace LootValue
         /// many unrelated text nodes (stash search, vendor listings, tooltips) whose text can also be priced;
         /// those must not be mistaken for ground labels.
         /// </summary>
-        private void RefreshGroundTagNames(LootValuePricingPass pricing)
+        private void RefreshGroundTagNames()
         {
             this.groundTagNames.Clear();
             var area = Core.States.InGameStateObject.CurrentAreaInstance;
@@ -556,8 +584,8 @@ namespace LootValue
 
                 foreach (var key in ArtKeyVariants(ExtractArtBasename(renderItem.ResourcePath)))
                 {
-                    if (pricing.TryResolveDisplayName(key, out var uniqueName) &&
-                        !pricing.IsGenericLookupName(uniqueName))
+                    if (PoeNinjaPriceFetcher.TryResolveDisplayName(key, out var uniqueName) &&
+                        !PoeNinjaPriceFetcher.IsGenericLookupName(uniqueName))
                     {
                         this.groundTagNames.Add(uniqueName.Trim());
                     }
@@ -566,7 +594,7 @@ namespace LootValue
         }
 
         /// <summary>Draws cached owned-stack values in the Currency Exchange item browser.</summary>
-        private void DrawCurrencyExchangeValues(LootValuePricingPass pricing)
+        private void DrawCurrencyExchangeValues()
         {
             if (!this.EnsureReflection()) return;
 
@@ -574,7 +602,7 @@ namespace LootValue
             if (now >= this.nextExchangeScanUtc)
             {
                 this.nextExchangeScanUtc = now.AddMilliseconds(Math.Clamp(this.Settings.SlotRescanIntervalMs, 100, 2000));
-                this.ScanCurrencyExchange(pricing);
+                this.ScanCurrencyExchange();
             }
 
             if (this.cachedExchangeLabels.Count == 0) return;
@@ -594,7 +622,7 @@ namespace LootValue
             }
         }
 
-        private void ScanCurrencyExchange(LootValuePricingPass pricing)
+        private void ScanCurrencyExchange()
         {
             this.cachedExchangeLabels.Clear();
             var root = this.ResolveUiPath(Core.States.InGameStateObject.GameUi.Address, CurrencyExchangeRootPath);
@@ -627,7 +655,7 @@ namespace LootValue
                         var name = this.ReadUiElementText(nameAddress).Split('\n')[0].Trim();
                         var amountText = this.ReadUiElementText(iconChildren[0]);
                         if (name.Length < 2 || !TryParseOwnedAmount(amountText, out var amount) || amount <= 0) continue;
-                        if (!this.TryPriceNamedStack(pricing, name, amount, out var text, out var color, out var highlight)) continue;
+                        if (!this.TryPriceNamedStack(name, amount, out var text, out var color, out var highlight)) continue;
                         if (!PluginUiElementReflection.TryGetAbsoluteRect(iconAddress, out var iconPosition, out var iconSize)) continue;
 
                         var center = iconPosition + (iconSize * 0.5f);
@@ -682,7 +710,6 @@ namespace LootValue
         }
 
         private bool TryPriceNamedStack(
-            LootValuePricingPass pricing,
             string itemName,
             long amount,
             out string text,
@@ -692,251 +719,249 @@ namespace LootValue
             text = string.Empty;
             color = 0;
             highlight = false;
-            var query = CreateQuery(itemName, Array.Empty<string>(), string.Empty, string.Empty, itemName);
-            if (!pricing.TryPrice(query, amount, this.Settings.DisplayCurrency, out var price)) return false;
-            var exValue = (double)price.ExaltedValue;
+            var price = PoeNinjaPriceFetcher.GetPrice(itemName);
+            if (price == null) return false;
+
+            var priced = new PoeNinjaPrice { PriceChaos = price.PriceChaos * amount };
+            var (exValue, _) = PoeNinjaPriceFetcher.GetDisplayPrice(priced, 1);
             if (exValue < this.Settings.MinValueEx) return false;
 
-            text = price.Text;
+            var (displayValue, displayCurrency) = PoeNinjaPriceFetcher.GetDisplayPrice(priced, this.Settings.DisplayCurrency);
+            text = FormatValue(displayValue, displayCurrency);
             highlight = exValue >= this.Settings.HighlightMinEx;
             color = ImGui.ColorConvertFloat4ToU32(highlight ? this.Settings.HighlightColor : this.Settings.TextColor);
             return true;
         }
 
-        /// <summary>Prices item slots in the open stash and inventory panels.</summary>
-        private void DrawItemSlotValues(LootValuePricingPass pricing)
+        /// <summary>Prices item slots in open stash, inventory, and Ritual reward panels.</summary>
+        private void DrawItemSlotValues()
         {
             var gameUi = Core.States.InGameStateObject.GameUi;
-            if (gameUi.Address == IntPtr.Zero || !this.EnsureReflection())
-            {
-                this.ClearSlotScans();
-                return;
-            }
+            if (gameUi.Address == IntPtr.Zero || !this.EnsureReflection()) return;
 
             var scanLeft = this.Settings.ShowStashOverlay || this.Settings.ShowSlotDebugInfo;
             var scanRight = this.Settings.ShowInventoryOverlay || this.Settings.ShowSlotDebugInfo;
+            var scanRitual = this.Settings.ShowRitualOverlay || this.Settings.ShowSlotDebugInfo;
             var leftAddress = scanLeft && gameUi.LeftPanel.IsVisible ? gameUi.LeftPanel.Address : IntPtr.Zero;
             var rightAddress = scanRight && gameUi.RightPanel.IsVisible ? gameUi.RightPanel.Address : IntPtr.Zero;
+            var ritualAddress = scanRitual ? this.ResolveVisibleRitualRewardGrid(gameUi.Address) : IntPtr.Zero;
 
-            if (leftAddress != this.cachedLeftPanelAddress || rightAddress != this.cachedRightPanelAddress)
+            if (leftAddress != this.cachedLeftPanelAddress || rightAddress != this.cachedRightPanelAddress ||
+                ritualAddress != this.cachedRitualGridAddress)
             {
                 this.cachedLeftPanelAddress = leftAddress;
                 this.cachedRightPanelAddress = rightAddress;
+                this.cachedRitualGridAddress = ritualAddress;
                 this.nextSlotScanUtc = DateTime.MinValue;
-                this.RestartSlotScan(
-                    isLeft: true,
-                    leftAddress,
-                    gameUi.LeftPanel.Position,
-                    gameUi.LeftPanel.Size,
-                    pricing);
-                this.RestartSlotScan(
-                    isLeft: false,
-                    rightAddress,
-                    gameUi.RightPanel.Position,
-                    gameUi.RightPanel.Size,
-                    pricing);
             }
 
             var now = DateTime.UtcNow;
-            this.EnsureSlotScanners();
-            var leftScan = this.leftSlotScan!;
-            var rightScan = this.rightSlotScan!;
-            var scansComplete = leftScan.IsComplete && rightScan.IsComplete;
-            if (scansComplete && now >= this.nextSlotScanUtc)
+            if (now >= this.nextSlotScanUtc)
             {
-                this.nextSlotScanUtc = DateTime.MinValue;
-                this.RestartSlotScan(true, leftAddress, gameUi.LeftPanel.Position, gameUi.LeftPanel.Size, pricing);
-                this.RestartSlotScan(false, rightAddress, gameUi.RightPanel.Position, gameUi.RightPanel.Size, pricing);
-            }
-
-            var budget = new PanelScanBudget(
-                SlotTraversalBudgetPerFrame,
-                SlotRectangleBudgetPerFrame,
-                SlotValidationBudgetPerFrame,
-                SlotPricingBudgetPerFrame);
-            this.slotScanScheduler.Advance(leftScan, rightScan, ref budget);
-            this.cachedLeftSlots = leftScan.Snapshot;
-            this.cachedRightSlots = rightScan.Snapshot;
-
-            if (this.nextSlotScanUtc == DateTime.MinValue &&
-                leftScan.IsComplete && rightScan.IsComplete)
-            {
-                this.leftSlotReport = this.leftSlotScanContext?.Report ?? new SlotScanReport(IntPtr.Zero);
-                this.rightSlotReport = this.rightSlotScanContext?.Report ?? new SlotScanReport(IntPtr.Zero);
                 this.nextSlotScanUtc = now.AddMilliseconds(Math.Clamp(this.Settings.SlotRescanIntervalMs, 100, 2000));
+                if (leftAddress != IntPtr.Zero)
+                {
+                    this.cachedLeftSlots = this.ScanItemSlots(
+                        leftAddress,
+                        gameUi.LeftPanel.Position,
+                        gameUi.LeftPanel.Size,
+                        out this.leftSlotReport);
+                }
+                else
+                {
+                    this.cachedLeftSlots.Clear();
+                    this.leftSlotReport = new SlotScanReport(IntPtr.Zero);
+                }
+
+                if (rightAddress != IntPtr.Zero)
+                {
+                    this.cachedRightSlots = this.ScanItemSlots(
+                        rightAddress,
+                        gameUi.RightPanel.Position,
+                        gameUi.RightPanel.Size,
+                        out this.rightSlotReport);
+                }
+                else
+                {
+                    this.cachedRightSlots.Clear();
+                    this.rightSlotReport = new SlotScanReport(IntPtr.Zero);
+                }
+
+                if (ritualAddress != IntPtr.Zero &&
+                    PluginUiElementReflection.TryGetAbsoluteRect(ritualAddress, out var ritualPosition, out var ritualSize))
+                {
+                    this.cachedRitualSlots = this.ScanItemSlots(
+                        ritualAddress,
+                        ritualPosition,
+                        ritualSize,
+                        out this.ritualSlotReport);
+                }
+                else
+                {
+                    this.cachedRitualSlots.Clear();
+                    this.ritualSlotReport = new SlotScanReport(IntPtr.Zero);
+                }
             }
 
             var leftScroll = GetScrollFrameState(this.cachedLeftSlots);
             var rightScroll = GetScrollFrameState(this.cachedRightSlots);
+            var ritualScroll = GetScrollFrameState(this.cachedRitualSlots);
             var hidePrices = this.Settings.HideSlotPricesOnHover &&
                              (IsAnySlotHovered(this.cachedLeftSlots, leftScroll) ||
-                              IsAnySlotHovered(this.cachedRightSlots, rightScroll));
+                              IsAnySlotHovered(this.cachedRightSlots, rightScroll) ||
+                              IsAnySlotHovered(this.cachedRitualSlots, ritualScroll));
             this.DrawItemSlots(this.cachedLeftSlots, this.Settings.ShowStashOverlay, hidePrices, leftScroll);
             this.DrawItemSlots(this.cachedRightSlots, this.Settings.ShowInventoryOverlay, hidePrices, rightScroll);
+            this.DrawItemSlots(this.cachedRitualSlots, this.Settings.ShowRitualOverlay, hidePrices, ritualScroll);
             if (this.Settings.ShowSlotDebugInfo)
             {
                 this.DrawSlotDiagnosticsWindow();
             }
         }
 
-        private void EnsureSlotScanners()
+        private IntPtr ResolveVisibleRitualRewardGrid(IntPtr gameUiAddress)
         {
-            this.leftSlotScan ??= this.CreateSlotScanner(() => this.leftSlotScanContext);
-            this.rightSlotScan ??= this.CreateSlotScanner(() => this.rightSlotScanContext);
+            var candidate = this.ResolveUiPath(gameUiAddress, RitualRewardGridPath);
+            if (!this.TryGetVisibleChildren(candidate, out var tiles) || tiles.Length is < 1 or > 32)
+            {
+                return IntPtr.Zero;
+            }
+
+            // The fixed path is only accepted while at least one direct reward tile carries a valid
+            // item pointer. This prevents a future UI-tree shift from pricing an unrelated panel.
+            foreach (var tile in tiles)
+            {
+                var pointerValue = this.readIntPtrMethod?.Invoke(this.handleObj, new object[] { tile + UiElementItemAddressOffset });
+                if (pointerValue is IntPtr itemAddress && itemAddress != IntPtr.Zero &&
+                    PluginUiElementReflection.TryValidateItemAddress(itemAddress, out _, out _))
+                {
+                    return candidate;
+                }
+            }
+
+            return IntPtr.Zero;
         }
 
-        private void ClearSlotScans()
-        {
-            this.cachedLeftSlots = Array.Empty<SlotInfo>();
-            this.cachedRightSlots = Array.Empty<SlotInfo>();
-            this.cachedLeftPanelAddress = IntPtr.Zero;
-            this.cachedRightPanelAddress = IntPtr.Zero;
-            this.nextSlotScanUtc = DateTime.MinValue;
-            this.leftSlotScan?.Clear();
-            this.rightSlotScan?.Clear();
-            this.leftSlotScanContext = null;
-            this.rightSlotScanContext = null;
-            this.leftSlotReport = new SlotScanReport(IntPtr.Zero);
-            this.rightSlotReport = new SlotScanReport(IntPtr.Zero);
-        }
-
-        private IncrementalPanelScan<SlotTraversalNode, SlotElementCandidate, SlotCandidateWork, SlotInfo> CreateSlotScanner(
-            Func<SlotScanContext?> getContext) => new(
-                node => this.TraverseSlotNode(getContext(), node),
-                candidate => this.InspectSlotCandidate(getContext(), candidate),
-                work => this.ValidateSlotCandidate(getContext(), work),
-                work => this.PriceSlotCandidate(getContext(), work),
-                candidate => candidate.ItemAddress,
-                MaxSlotTraversalElements);
-
-        private void RestartSlotScan(
-            bool isLeft,
+        private List<SlotInfo> ScanItemSlots(
             IntPtr panelAddress,
             Vector2 panelPosition,
             Vector2 panelSize,
-            LootValuePricingPass pricing)
+            out SlotScanReport report)
         {
-            this.EnsureSlotScanners();
-            var scanner = isLeft ? this.leftSlotScan! : this.rightSlotScan!;
-            if (panelAddress == IntPtr.Zero)
+            report = new SlotScanReport(panelAddress);
+            var candidatesByItem = new Dictionary<IntPtr, List<SlotElementCandidate>>();
+            if (panelAddress == IntPtr.Zero || this.readUiOffsetMethod == null ||
+                this.readStdVectorMethod == null || this.readIntPtrMethod == null) return new List<SlotInfo>();
+
+            var queue = new Queue<(IntPtr Address, IntPtr Parent, ScrollBinding Scroll)>();
+            var visited = new HashSet<IntPtr>();
+            queue.Enqueue((panelAddress, IntPtr.Zero, default));
+
+            while (queue.Count > 0 && visited.Count < 5000)
             {
-                scanner.Clear();
-                if (isLeft) this.leftSlotScanContext = null;
-                else this.rightSlotScanContext = null;
-                return;
-            }
+                var (element, parent, scroll) = queue.Dequeue();
+                if (element == IntPtr.Zero || !visited.Add(element)) continue;
+                report.VisitedElements++;
+                if (this.readUiOffsetMethod.Invoke(this.handleObj, new object[] { element }) is not UiElementBaseOffset offset) continue;
+                if (!UiElementBaseFuncs.IsVisibleChecker(offset.Flags)) continue;
 
-            var context = new SlotScanContext(panelAddress, panelPosition, panelSize, pricing);
-            if (isLeft) this.leftSlotScanContext = context;
-            else this.rightSlotScanContext = context;
-            scanner.Restart(panelAddress, new SlotTraversalNode(panelAddress, IntPtr.Zero, default));
-        }
-
-        private PanelTraversalStep<SlotTraversalNode, SlotElementCandidate> TraverseSlotNode(
-            SlotScanContext? context,
-            SlotTraversalNode node)
-        {
-            if (context == null || node.Address == IntPtr.Zero ||
-                context.Visited.Count >= MaxSlotTraversalElements || context.Visited.Contains(node.Address) ||
-                this.readUiOffsetMethod == null || this.readStdVectorMethod == null || this.readIntPtrMethod == null)
-                return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(Array.Empty<SlotTraversalNode>());
-
-            if (this.readUiOffsetMethod.Invoke(this.handleObj, new object[] { node.Address }) is not UiElementBaseOffset offset ||
-                !UiElementBaseFuncs.IsVisibleChecker(offset.Flags))
-            {
-                context.Visited.Add(node.Address);
-                context.Report.VisitedElements++;
-                return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(Array.Empty<SlotTraversalNode>());
-            }
-
-            var childNodes = new List<SlotTraversalNode>();
-            if (this.readStdVectorMethod.Invoke(this.handleObj, new object[] { offset.ChildrensPtr }) is IntPtr[] children)
-            {
-                var scrollStatus = this.TryGetScrollContainer(children, out var scrollItemsAddress, out var localScroll);
-                if (scrollStatus == ScrollProbeStatus.Unavailable)
-                    return PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>.Deferred();
-                var hasScrollContainer = scrollStatus == ScrollProbeStatus.Succeeded;
-                if (hasScrollContainer)
+                if (this.readStdVectorMethod.Invoke(this.handleObj, new object[] { offset.ChildrensPtr }) is IntPtr[] children)
                 {
-                    context.Report.ScrollContainers++;
-                    context.Report.ScrollOffsetY = localScroll.ScanOffsetY;
+                    var hasScrollContainer = this.TryGetScrollContainer(
+                        children,
+                        out var scrollItemsAddress,
+                        out var localScroll);
+                    if (hasScrollContainer)
+                    {
+                        report.ScrollContainers++;
+                        report.ScrollOffsetY = localScroll.ScanOffsetY;
+                    }
+
+                    foreach (var child in children)
+                    {
+                        if (hasScrollContainer && child == scrollItemsAddress)
+                        {
+                            queue.Enqueue((child, element, localScroll));
+                        }
+                        else
+                        {
+                            queue.Enqueue((child, element, scroll));
+                        }
+                    }
                 }
 
-                foreach (var child in children)
+                // Slot discovery/rendering adapted from StashValueByZx0 by zx0CF1.
+                var pointerValue = this.readIntPtrMethod.Invoke(this.handleObj, new object[] { element + UiElementItemAddressOffset });
+                var itemAddress = pointerValue is IntPtr pointer ? pointer : IntPtr.Zero;
+                if (itemAddress == IntPtr.Zero) continue;
+                report.NonZeroPointers++;
+
+                if (!candidatesByItem.TryGetValue(itemAddress, out var itemCandidates))
                 {
-                    if (childNodes.Count >= MaxSlotTraversalElements) break;
-                    childNodes.Add(new SlotTraversalNode(
-                        child,
-                        node.Address,
-                        hasScrollContainer && child == scrollItemsAddress ? localScroll : node.Scroll));
+                    itemCandidates = new List<SlotElementCandidate>();
+                    candidatesByItem[itemAddress] = itemCandidates;
                 }
+
+                itemCandidates.Add(new SlotElementCandidate(element, parent, scroll));
             }
 
-            context.Visited.Add(node.Address);
-            context.Report.VisitedElements++;
-
-            var pointerValue = this.readIntPtrMethod.Invoke(this.handleObj, new object[] { node.Address + UiElementItemAddressOffset });
-            var itemAddress = pointerValue is IntPtr pointer ? pointer : IntPtr.Zero;
-            if (itemAddress == IntPtr.Zero)
-                return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(childNodes);
-
-            context.Report.NonZeroPointers++;
-            if (context.UniquePointers.Add(itemAddress)) context.Report.UniquePointers++;
-            return new PanelTraversalStep<SlotTraversalNode, SlotElementCandidate>(
-                childNodes,
-                new SlotElementCandidate(node.Address, node.ParentAddress, node.Scroll, itemAddress));
-        }
-
-        private PanelCandidateResult<SlotCandidateWork> InspectSlotCandidate(
-            SlotScanContext? context,
-            SlotElementCandidate candidate)
-        {
-            if (context == null) return PanelCandidateResult<SlotCandidateWork>.Rejected();
-            var panelMax = context.PanelPosition + context.PanelSize;
-            if (!TryGetSlotRect(candidate, out var position, out var size)) return PanelCandidateResult<SlotCandidateWork>.Rejected();
-            var center = position + (size * 0.5f);
-            if (center.X < context.PanelPosition.X || center.X > panelMax.X)
-                return PanelCandidateResult<SlotCandidateWork>.Rejected();
-            if (!candidate.Scroll.IsActive && (center.Y < context.PanelPosition.Y || center.Y > panelMax.Y))
-                return PanelCandidateResult<SlotCandidateWork>.Rejected();
-
-            return PanelCandidateResult<SlotCandidateWork>.Accepted(new SlotCandidateWork(candidate, position, size));
-        }
-
-        private bool ValidateSlotCandidate(SlotScanContext? context, SlotCandidateWork work)
-        {
-            if (context == null) return false;
-            if (!PluginUiElementReflection.TryValidateItemAddress(work.Candidate.ItemAddress, out _, out var failureReason))
+            // Premium tabs expose many ghost UI copies. Deduplicate by item pointer before validating,
+            // constructing components, reading mods, or pricing so each real item pays those costs once.
+            report.UniquePointers = candidatesByItem.Count;
+            var panelMax = panelPosition + panelSize;
+            var slots = new List<SlotInfo>();
+            foreach (var (itemAddress, itemCandidates) in candidatesByItem)
             {
-                context.Report.AddRejected(work.Candidate.ElementAddress, work.Candidate.ItemAddress, failureReason);
-                return false;
+                var hasVisibleRect = false;
+                var position = Vector2.Zero;
+                var size = Vector2.Zero;
+                var selectedScroll = default(ScrollBinding);
+                var diagnosticElement = itemCandidates[0].ElementAddress;
+                foreach (var candidate in itemCandidates)
+                {
+                    if (!TryGetSlotRect(candidate, out var candidatePosition, out var candidateSize)) continue;
+                    var center = candidatePosition + (candidateSize * 0.5f);
+                    if (center.X < panelPosition.X || center.X > panelMax.X) continue;
+                    if (!candidate.Scroll.IsActive &&
+                        (center.Y < panelPosition.Y || center.Y > panelMax.Y)) continue;
+
+                    diagnosticElement = candidate.ElementAddress;
+                    position = candidatePosition;
+                    size = candidateSize;
+                    selectedScroll = candidate.Scroll;
+                    hasVisibleRect = true;
+                    break;
+                }
+
+                if (!hasVisibleRect) continue;
+                if (!PluginUiElementReflection.TryValidateItemAddress(itemAddress, out _, out var failureReason))
+                {
+                    report.AddRejected(diagnosticElement, itemAddress, failureReason);
+                    continue;
+                }
+
+                var item = ReadFreshItem(itemAddress);
+                if (item == null || string.IsNullOrEmpty(item.Path) ||
+                    !item.Path.StartsWith(ItemPathPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    report.AddRejected(diagnosticElement, itemAddress, "item changed after validation");
+                    continue;
+                }
+
+                report.ValidItems++;
+                if (!this.TryPriceItem(item, out var valueEx, out var valueText, includeUniqueName: false) ||
+                    valueEx < this.Settings.MinValueEx) continue;
+                report.PricedCandidates++;
+
+                slots.Add(new SlotInfo(itemAddress, position, size, valueText, selectedScroll));
             }
 
-            work.Item = ReadFreshItem(work.Candidate.ItemAddress);
-            if (work.Item == null || string.IsNullOrEmpty(work.Item.Path) ||
-                !work.Item.Path.StartsWith(ItemPathPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                context.Report.AddRejected(work.Candidate.ElementAddress, work.Candidate.ItemAddress, "item changed after validation");
-                return false;
-            }
+            report.VisibleSlots = slots.Count;
 
-            context.Report.ValidItems++;
-            return true;
+            return slots;
         }
 
-        private PanelCandidateResult<SlotInfo> PriceSlotCandidate(SlotScanContext? context, SlotCandidateWork work)
-        {
-            if (context == null || work.Item == null ||
-                !this.TryPriceItem(context.Pricing, work.Item, out var valueEx, out var valueText, includeUniqueName: false) ||
-                valueEx < this.Settings.MinValueEx) return PanelCandidateResult<SlotInfo>.Rejected();
-
-            context.Report.PricedCandidates++;
-            context.Report.VisibleSlots++;
-            return PanelCandidateResult<SlotInfo>.Accepted(
-                new SlotInfo(work.Candidate.ItemAddress, work.Position, work.Size, valueText, work.Candidate.Scroll));
-        }
-
-        private ScrollProbeStatus TryGetScrollContainer(
+        private bool TryGetScrollContainer(
             IntPtr[] children,
             out IntPtr itemsAddress,
             out ScrollBinding scroll)
@@ -944,23 +969,19 @@ namespace LootValue
             itemsAddress = IntPtr.Zero;
             scroll = default;
             if (children.Length <= 2 || children[1] == IntPtr.Zero || children[2] == IntPtr.Zero ||
-                this.readUiOffsetMethod == null || this.readStdVectorMethod == null) return ScrollProbeStatus.NotApplicable;
+                this.readUiOffsetMethod == null || this.readStdVectorMethod == null) return false;
 
             var contentAddress = children[1];
             var holderAddress = children[2];
             if (this.readUiOffsetMethod.Invoke(this.handleObj, new object[] { holderAddress }) is not UiElementBaseOffset holderOffset ||
                 !UiElementBaseFuncs.IsVisibleChecker(holderOffset.Flags) ||
                 this.readStdVectorMethod.Invoke(this.handleObj, new object[] { holderOffset.ChildrensPtr }) is not IntPtr[] holderChildren ||
-                holderChildren.Length == 0 || holderChildren[0] == IntPtr.Zero) return ScrollProbeStatus.NotApplicable;
+                holderChildren.Length == 0 || holderChildren[0] == IntPtr.Zero) return false;
 
             var thumbAddress = holderChildren[0];
-            if (this.scrollRectangleProbeBudget.TryReserve(3) == ScrollProbeStatus.Unavailable)
-                return ScrollProbeStatus.Unavailable;
-            var contentRead = PluginUiElementReflection.TryGetAbsoluteRect(contentAddress, out var contentPosition, out var contentSize);
-            var holderRead = PluginUiElementReflection.TryGetAbsoluteRect(holderAddress, out var holderPosition, out var holderSize);
-            var thumbRead = PluginUiElementReflection.TryGetAbsoluteRect(thumbAddress, out var thumbPosition, out var thumbSize);
-            if (ScrollProbePolicy.FromReadResults(contentRead, holderRead, thumbRead) == ScrollProbeStatus.Unavailable)
-                return ScrollProbeStatus.Unavailable;
+            if (!PluginUiElementReflection.TryGetAbsoluteRect(contentAddress, out var contentPosition, out var contentSize) ||
+                !PluginUiElementReflection.TryGetAbsoluteRect(holderAddress, out var holderPosition, out var holderSize) ||
+                !PluginUiElementReflection.TryGetAbsoluteRect(thumbAddress, out var thumbPosition, out var thumbSize)) return false;
 
             // Shape checks keep ordinary [1]/[2] child layouts from being mistaken for scroll views.
             if (holderSize.X < 4f || holderSize.X > 64f || holderSize.Y < 40f ||
@@ -968,11 +989,11 @@ namespace LootValue
                 thumbSize.Y < 8f || thumbSize.Y >= holderSize.Y ||
                 contentSize.Y <= holderSize.Y + 1f || holderPosition.X < contentPosition.X ||
                 thumbPosition.Y < holderPosition.Y - 2f ||
-                thumbPosition.Y + thumbSize.Y > holderPosition.Y + holderSize.Y + 2f) return ScrollProbeStatus.NotApplicable;
+                thumbPosition.Y + thumbSize.Y > holderPosition.Y + holderSize.Y + 2f) return false;
 
             var thumbTravel = holderSize.Y - thumbSize.Y;
             var contentOverflow = contentSize.Y - holderSize.Y;
-            if (thumbTravel <= 0f || contentOverflow <= 0f) return ScrollProbeStatus.NotApplicable;
+            if (thumbTravel <= 0f || contentOverflow <= 0f) return false;
 
             var progress = Math.Clamp((thumbPosition.Y - holderPosition.Y) / thumbTravel, 0f, 1f);
             itemsAddress = contentAddress;
@@ -983,9 +1004,7 @@ namespace LootValue
                 progress * contentOverflow,
                 holderPosition.Y,
                 holderPosition.Y + holderSize.Y);
-            return float.IsFinite(scroll.ScanOffsetY) && scroll.ClipBottom > scroll.ClipTop
-                ? ScrollProbeStatus.Succeeded
-                : ScrollProbeStatus.NotApplicable;
+            return float.IsFinite(scroll.ScanOffsetY) && scroll.ClipBottom > scroll.ClipTop;
         }
 
         private static bool TryGetSlotRect(SlotElementCandidate candidate, out Vector2 position, out Vector2 size)
@@ -1014,7 +1033,6 @@ namespace LootValue
             var mousePosition = ImGui.GetIO().MousePos;
             foreach (var slot in slots)
             {
-                if (!ScrollProbePolicy.CanUseLivePosition(slot.Scroll.IsActive, scroll.Status)) continue;
                 var position = GetLiveSlotPosition(slot, scroll);
                 var centerY = position.Y + (slot.Size.Y * 0.5f);
                 if (centerY < scroll.ClipTop || centerY > scroll.ClipBottom) continue;
@@ -1028,25 +1046,16 @@ namespace LootValue
             return false;
         }
 
-        private ScrollFrameState GetScrollFrameState(IReadOnlyList<SlotInfo> slots)
+        private static ScrollFrameState GetScrollFrameState(IReadOnlyList<SlotInfo> slots)
         {
             foreach (var slot in slots)
             {
                 var binding = slot.Scroll;
                 if (!binding.IsActive) continue;
-                if (this.scrollRectangleProbeBudget.TryReserve(2) == ScrollProbeStatus.Unavailable)
-                    return ScrollFrameState.Unavailable(binding.HolderAddress);
-                var holderRead = PluginUiElementReflection.TryGetAbsoluteRect(
-                    binding.HolderAddress,
-                    out var holderPosition,
-                    out var holderSize);
-                var thumbRead = PluginUiElementReflection.TryGetAbsoluteRect(
-                    binding.ThumbAddress,
-                    out var thumbPosition,
-                    out var thumbSize);
-                if (ScrollProbePolicy.FromReadResults(holderRead, thumbRead) == ScrollProbeStatus.Unavailable)
+                if (!PluginUiElementReflection.TryGetAbsoluteRect(binding.HolderAddress, out var holderPosition, out var holderSize) ||
+                    !PluginUiElementReflection.TryGetAbsoluteRect(binding.ThumbAddress, out var thumbPosition, out var thumbSize))
                 {
-                    return ScrollFrameState.Unavailable(binding.HolderAddress);
+                    return new ScrollFrameState(binding.HolderAddress, 0f, binding.ClipTop, binding.ClipBottom);
                 }
 
                 var thumbTravel = holderSize.Y - thumbSize.Y;
@@ -1084,6 +1093,8 @@ namespace LootValue
                 this.DrawSlotScanReport(this.PluginText.T("diagnostics.slots.left_panel", "Left panel (stash)"), this.leftSlotReport);
                 ImGui.Separator();
                 this.DrawSlotScanReport(this.PluginText.T("diagnostics.slots.right_panel", "Right panel (inventory)"), this.rightSlotReport);
+                ImGui.Separator();
+                this.DrawSlotScanReport(this.PluginText.T("diagnostics.slots.ritual_rewards", "Ritual rewards"), this.ritualSlotReport);
             }
 
             ImGui.End();
@@ -1094,8 +1105,9 @@ namespace LootValue
             ImGui.TextUnformatted($"{label}: 0x{report.PanelAddress.ToInt64():X}");
             ImGui.TextUnformatted(this.PluginText.F(
                 "diagnostics.slots.summary",
-                "UI elements={0}  non-zero +0x4F8={1}  unique pointers={2}  valid items={3}  priced={4}  visible={5}  scroll views={6}  scroll Y={7:0.0}",
+                "UI elements={0}  non-zero +0x{1:X}={2}  unique pointers={3}  valid items={4}  priced={5}  visible={6}  scroll views={7}  scroll Y={8:0.0}",
                 report.VisitedElements,
+                UiElementItemAddressOffset,
                 report.NonZeroPointers,
                 report.UniquePointers,
                 report.ValidItems,
@@ -1127,7 +1139,6 @@ namespace LootValue
 
             foreach (var slot in slots)
             {
-                if (!ScrollProbePolicy.CanUseLivePosition(slot.Scroll.IsActive, scroll.Status)) continue;
                 var position = GetLiveSlotPosition(slot, scroll);
                 var centerY = position.Y + (slot.Size.Y * 0.5f);
                 if (centerY < scroll.ClipTop || centerY > scroll.ClipBottom) continue;
@@ -1152,6 +1163,13 @@ namespace LootValue
                 foreground.AddText(font, fontSize, drawPosition, color, slot.ValueText);
             }
         }
+
+        private static string FormatValue(double value, string currency) => currency switch
+        {
+            "divine" => value.ToString("0.00", CultureInfo.InvariantCulture) + " div",
+            "chaos" => value.ToString("0.#", CultureInfo.InvariantCulture) + " c",
+            _ => value.ToString("0.#", CultureInfo.InvariantCulture) + " ex",
+        };
 
         /// <summary>Alpha-beta filter on a screen position (per tracked key). It estimates screen-space
         /// VELOCITY and advances by it each frame, then nudges toward the noisy measurement by alpha — so
@@ -1182,7 +1200,7 @@ namespace LootValue
 
         /// <summary>Walks every awake entity and reports the ground-item detection funnel + sample reads,
         /// so we can see which stage drops items. Throttled. Independent of the overlay gates.</summary>
-        private void RunDiagnostics(LootValuePricingPass pricing)
+        private void RunDiagnostics()
         {
             var now = DateTime.UtcNow;
             if (now < this.nextDiagUtc) return;
@@ -1209,7 +1227,7 @@ namespace LootValue
                 var rarity = item.TryGetComponent<Mods>(out var m) ? m.Rarity : Rarity.Normal;
                 var baseName = item.TryGetComponent<Base>(out var b) ? b.BaseItemName : string.Empty;
                 var art = item.TryGetComponent<RenderItem>(out var ri) ? ExtractArtBasename(ri.ResourcePath) : string.Empty;
-                var ok = this.TryPriceItem(pricing, item, out var ex, out var lbl);
+                var ok = this.TryPriceItem(item, out var ex, out var lbl);
                 if (ok)
                 {
                     priced++;
@@ -1224,18 +1242,13 @@ namespace LootValue
                 }
             }
 
-            var hasProviderStatus = pricing.TryGetStatus(out var status);
             this.diagSummary =
                 this.PluginText.F("diagnostics.summary.ingame", "InGame={0}  PanelOpen={1}", Core.States.GameCurrentState == GameStateTypes.InGameState, Core.States.InGameStateObject.GameUi.IsAnyLargePanelOpen) + "\n" +
                 this.PluginText.F("diagnostics.summary.awake_entities", "AwakeEntities={0}", total) + "\n" +
                 this.PluginText.F("diagnostics.summary.paths", "path contains 'WorldItem'={0}    path starts 'Metadata/Items'={1}", wiPath, metaItemsPath) + "\n" +
                 this.PluginText.F("diagnostics.summary.components", "WorldItem component (inner!=0)={0}    inner item read OK={1}", wiComp, innerOk) + "\n" +
                 this.PluginText.F("diagnostics.summary.pricing", "priced={0}    belowFloor(<{1}ex)={2}    would draw={3}", priced, this.Settings.MinValueEx, belowFloor, priced - belowFloor) + "\n" +
-                this.PluginText.F(
-                    "diagnostics.summary.price_db",
-                    "priceDB items={0}  fetching={1}",
-                    hasProviderStatus ? status.ItemCount : 0,
-                    hasProviderStatus && status.IsFetching);
+                this.PluginText.F("diagnostics.summary.price_db", "priceDB items={0}  fetching={1}", PoeNinjaPriceFetcher.LoadedItemCount, PoeNinjaPriceFetcher.IsFetching);
         }
 
         private void DrawDiagnosticsWindow()
@@ -1256,8 +1269,8 @@ namespace LootValue
         }
 
         /// <summary>Resolve an item's display value + label text. Uniques price by icon art (revealing
-        /// unidentified ones); everything else by base-type name. Mirrors RitualHelper's resolution.</summary>
-        private bool TryPriceItem(LootValuePricingPass pricing, Item item, out double valueEx, out string label, bool includeUniqueName = true)
+        /// unidentified ones); everything else by base-type name.</summary>
+        private bool TryPriceItem(Item item, out double valueEx, out string label, bool includeUniqueName = true)
         {
             valueEx = 0;
             label = string.Empty;
@@ -1269,21 +1282,20 @@ namespace LootValue
             var artBasename = item.TryGetComponent<RenderItem>(out var renderItem) ? ExtractArtBasename(renderItem.ResourcePath) : string.Empty;
             var fullItemPath = item.Path ?? string.Empty;
             var internalName = fullItemPath.Contains('/') ? fullItemPath[(fullItemPath.LastIndexOf('/') + 1)..] : fullItemPath;
-            var modLines = ItemModHelper.GetModLines(item);
 
             var itemName = baseName;
             if (rarity == Rarity.Unique && !string.IsNullOrEmpty(artBasename))
             {
                 foreach (var key in ArtKeyVariants(artBasename))
                 {
-                    if (pricing.TryResolveDisplayName(key, out var uniqueName) &&
-                        !pricing.IsGenericLookupName(uniqueName))
+                    if (PoeNinjaPriceFetcher.TryResolveDisplayName(key, out var uniqueName) &&
+                        !PoeNinjaPriceFetcher.IsGenericLookupName(uniqueName))
                     {
                         itemName = uniqueName;
                         break;
                     }
 
-                    if (pricing.HasPriceDataForName(key))
+                    if (PoeNinjaPriceFetcher.HasPriceDataForName(key))
                     {
                         itemName = key;
                         break;
@@ -1293,26 +1305,27 @@ namespace LootValue
 
             if (string.IsNullOrWhiteSpace(itemName)) return false;
 
+            var modLines = ItemModHelper.GetModLines(item);
+            var price = PoeNinjaPriceFetcher.GetPrice(itemName, modLines, internalName, fullItemPath);
+            if (price == null) return false;
+
             var stack = item.TryGetComponent<Stack>(out var stackComp) && stackComp.Count > 1 ? stackComp.Count : 1;
-            var query = CreateQuery(itemName, modLines, internalName, fullItemPath, BuildScoutText(itemName, modLines));
-            if (!pricing.TryPrice(query, stack, this.Settings.DisplayCurrency, out var price)) return false;
-            valueEx = (double)price.ExaltedValue;
+            var priceChaos = price.PriceChaos * stack;
+
+            var priced = new PoeNinjaPrice { PriceChaos = priceChaos };
+            var (displayValue, displayCurrency) = PoeNinjaPriceFetcher.GetDisplayPrice(priced, this.Settings.DisplayCurrency);
+
+            // Value floor / highlight compare in Exalted, independent of the chosen display currency.
+            var (exValue, _) = PoeNinjaPriceFetcher.GetDisplayPrice(priced, 1);
+            valueEx = exValue;
+
+            var valueText = FormatValue(displayValue, displayCurrency);
 
             // valueText is already the stack TOTAL; only uniques get a name prefix.
             var nameForLabel = includeUniqueName && rarity == Rarity.Unique && this.Settings.RevealUnidentifiedUniques ? $"{itemName} — " : string.Empty;
-            label = $"{nameForLabel}{price.Text}";
+            label = $"{nameForLabel}{valueText}";
             return true;
         }
-
-        private static PriceQuery CreateQuery(
-            string itemName,
-            IReadOnlyList<string> modLines,
-            string internalName,
-            string fullItemPath,
-            string scoutText) => new(itemName, modLines, internalName, fullItemPath, scoutText);
-
-        private static string BuildScoutText(string itemName, IReadOnlyList<string> modLines) =>
-            modLines.Count == 0 ? itemName : itemName + "\n" + string.Join("\n", modLines);
 
         private static Item? ReadFreshItem(IntPtr itemAddress)
         {
@@ -1426,13 +1439,11 @@ namespace LootValue
             public SlotElementCandidate(
                 IntPtr elementAddress,
                 IntPtr parentAddress,
-                ScrollBinding scroll,
-                IntPtr itemAddress)
+                ScrollBinding scroll)
             {
                 this.ElementAddress = elementAddress;
                 this.ParentAddress = parentAddress;
                 this.Scroll = scroll;
-                this.ItemAddress = itemAddress;
             }
 
             public IntPtr ElementAddress { get; }
@@ -1440,58 +1451,6 @@ namespace LootValue
             public IntPtr ParentAddress { get; }
 
             public ScrollBinding Scroll { get; }
-
-            public IntPtr ItemAddress { get; }
-        }
-
-        private readonly record struct SlotTraversalNode(
-            IntPtr Address,
-            IntPtr ParentAddress,
-            ScrollBinding Scroll);
-
-        private sealed class SlotCandidateWork
-        {
-            public SlotCandidateWork(SlotElementCandidate candidate, Vector2 position, Vector2 size)
-            {
-                this.Candidate = candidate;
-                this.Position = position;
-                this.Size = size;
-            }
-
-            public SlotElementCandidate Candidate { get; }
-
-            public Vector2 Position { get; }
-
-            public Vector2 Size { get; }
-
-            public Item? Item { get; set; }
-        }
-
-        private sealed class SlotScanContext
-        {
-            public SlotScanContext(
-                IntPtr panelAddress,
-                Vector2 panelPosition,
-                Vector2 panelSize,
-                LootValuePricingPass pricing)
-            {
-                this.PanelPosition = panelPosition;
-                this.PanelSize = panelSize;
-                this.Pricing = pricing;
-                this.Report = new SlotScanReport(panelAddress);
-            }
-
-            public Vector2 PanelPosition { get; }
-
-            public Vector2 PanelSize { get; }
-
-            public LootValuePricingPass Pricing { get; }
-
-            public SlotScanReport Report { get; }
-
-            public HashSet<IntPtr> Visited { get; } = new();
-
-            public HashSet<IntPtr> UniquePointers { get; } = new();
         }
 
         private readonly struct ScrollBinding
@@ -1533,34 +1492,15 @@ namespace LootValue
                 IntPtr.Zero,
                 0f,
                 float.NegativeInfinity,
-                float.PositiveInfinity,
-                ScrollProbeStatus.NotApplicable);
+                float.PositiveInfinity);
 
             public ScrollFrameState(IntPtr holderAddress, float offsetDeltaY, float clipTop, float clipBottom)
-                : this(holderAddress, offsetDeltaY, clipTop, clipBottom, ScrollProbeStatus.Succeeded)
-            {
-            }
-
-            private ScrollFrameState(
-                IntPtr holderAddress,
-                float offsetDeltaY,
-                float clipTop,
-                float clipBottom,
-                ScrollProbeStatus status)
             {
                 this.HolderAddress = holderAddress;
                 this.OffsetDeltaY = offsetDeltaY;
                 this.ClipTop = clipTop;
                 this.ClipBottom = clipBottom;
-                this.Status = status;
             }
-
-            public static ScrollFrameState Unavailable(IntPtr holderAddress) => new(
-                holderAddress,
-                0f,
-                float.PositiveInfinity,
-                float.NegativeInfinity,
-                ScrollProbeStatus.Unavailable);
 
             public IntPtr HolderAddress { get; }
 
@@ -1569,8 +1509,6 @@ namespace LootValue
             public float ClipTop { get; }
 
             public float ClipBottom { get; }
-
-            public ScrollProbeStatus Status { get; }
         }
 
         private sealed class SlotScanReport

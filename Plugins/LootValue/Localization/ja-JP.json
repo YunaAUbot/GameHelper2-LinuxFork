@@ -1,5 +1,6 @@
 {
   "plugin.description": "地面、スタッシュ、インベントリのアイテムに市場価値を表示します。",
+  "button.refresh_prices_now": "今すぐ価格を更新してください",
   "currency.chaos": "カオス",
   "currency.divine": "神聖な",
   "currency.exalted": "高揚した",
@@ -13,6 +14,7 @@
   "diagnostics.summary.pricing": "価格={0} 以下のフロア(<{1}例)={2} は描画={3}になります",
   "diagnostics.window_title": "ルートバリュー診断",
   "section.display": "画面",
+  "section.price_source": "価格ソース",
   "settings.anchor_to_loot_tags": "戦利品ラベルへのアンカー (アイテムが積み重なると重なりません)",
   "settings.diagnostics_window": "診断ウィンドウ",
   "settings.font_size": "フォントサイズ",
@@ -22,12 +24,16 @@
   "settings.highlight_from": "ハイライト（例）",
   "settings.hide_when_game_unfocused": "ゲームが非アクティブのとき値を非表示にする",
   "settings.jitter_filter": "ジッターフィルター (低いほど強力、遅延なし)",
+  "settings.league": "リーグ",
   "settings.min_value_to_show": "表示する最小値 (例)",
+  "settings.refresh_interval": "更新間隔 (分)",
   "settings.rescan_interval": "再スキャン間隔 (ミリ秒)",
   "settings.rescan_interval.tooltip": "位置はフレームごとに再描画されます。再スキャンは商品/価格のみを再検出します。",
   "settings.reveal_unidentified_uniques": "未確認のユニークなものを明らかにする (アートによる)",
   "settings.show_overlay": "地上アイテムよりも価値を示す",
   "settings.smooth_label_motion": "スムーズなラベルの動き (速度追跡)",
   "settings.text_color": "文字の色",
-  "settings.vertical_offset": "垂直オフセット"
+  "settings.vertical_offset": "垂直オフセット",
+  "status.loaded_items": "{0} 個のアイテム | {1}分前",
+  "status.loading": "読み込み中..."
 }

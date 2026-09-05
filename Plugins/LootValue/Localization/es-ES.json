@@ -1,5 +1,6 @@
 {
   "plugin.description": "Muestra el valor de mercado de objetos del suelo, alijo e inventario.",
+  "button.refresh_prices_now": "Actualizar precios ahora",
   "currency.chaos": "Caos",
   "currency.divine": "Divino",
   "currency.exalted": "Exaltado",
@@ -13,6 +14,7 @@
   "diagnostics.summary.pricing": "precio={0} debajo del piso(<{1}ex)={2} dibujaría={3}",
   "diagnostics.window_title": "Diagnóstico de valor de botín",
   "section.display": "Mostrar",
+  "section.price_source": "fuente de precio",
   "settings.anchor_to_loot_tags": "Ancla para etiquetas de botín (no se superponen cuando los artículos se acumulan)",
   "settings.diagnostics_window": "Ventana de diagnóstico",
   "settings.font_size": "Tamaño de fuente",
@@ -22,12 +24,16 @@
   "settings.highlight_from": "Destacado de (ex)",
   "settings.hide_when_game_unfocused": "Ocultar valores cuando el juego no esté en primer plano",
   "settings.jitter_filter": "Filtro de fluctuación (inferior = más fuerte, sin demora)",
+  "settings.league": "Liga",
   "settings.min_value_to_show": "Valor mínimo para mostrar (ex)",
+  "settings.refresh_interval": "Intervalo de actualización (min)",
   "settings.rescan_interval": "Intervalo de reexploración (ms)",
   "settings.rescan_interval.tooltip": "Las posiciones vuelven a dibujar cada cuadro; volver a escanear solo vuelve a detectar artículos/precios.",
   "settings.reveal_unidentified_uniques": "Revelar únicos no identificados (por arte)",
   "settings.show_overlay": "Mostrar valor sobre elementos terrestres",
   "settings.smooth_label_motion": "Movimiento suave de etiquetas (seguimiento de velocidad)",
   "settings.text_color": "Color del texto",
-  "settings.vertical_offset": "Desplazamiento vertical"
+  "settings.vertical_offset": "Desplazamiento vertical",
+  "status.loaded_items": "{0} artículos | Hace {1} minutos",
+  "status.loading": "Cargando..."
 }

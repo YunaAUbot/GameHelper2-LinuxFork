@@ -6,6 +6,51 @@ Path of Exile 2; "0.5.x" references are the game patch the build targets.
 Sections marked **For plugin devs** describe newly exposed APIs you can read
 from your own plugins via `Core.*`.
 
+## [2.7.0] - 2026-09-05
+
+### Added
+
+- **PlayerBuffBar plugin.** Added configurable buff and resource bars with
+  duration, stack-count, and skill-alias support.
+- **OffsetHelper recovery tooling.** Added diagnostics and constrained
+  semantic recovery for shifted static patterns, Area Instance fields, and UI
+  panel chains to make patch-day failures easier to identify and repair.
+
+### Changed
+
+- **Updated for Path of Exile 2 patch 0.5.5.** Refreshed game-state,
+  Area Instance, World Area, UI-element, map UI, Atlas-node, and related plugin
+  offsets and signatures. Thanks to **YokkenUA** for finding and sharing many
+  updated offsets used in this release.
+- **Settings navigation redesigned.** Replaced tab navigation with a side menu,
+  added a minimize control, and prevented plugin rendering over settings
+  windows.
+- **Unified item pricing.** LootValue now prices ground, stash, inventory, and
+  Currency Exchange items, replacing the separate StashValueByZx0 plugin.
+  Existing stash display settings are imported on first run.
+- **Atlas2 content and routing expanded.** Added current content mappings,
+  persistent fog-node data, mist nodes, Ritual-line tools, and Uncharted Waters
+  ship and leyline visualization.
+- **Radar coverage expanded.** Improved area-change handling, map points of
+  interest, hidden-monster presentation, and Abyss, Delirium, and Azmeri Spirit
+  handling.
+
+### Fixed
+
+- **Patch 0.5.5 runtime recovery.** Fixed game-state attachment, area changes,
+  entities, terrain, panel visibility, passive-tree detection, radar scaling,
+  map transitions, and World Area details after the game layout changes.
+- **Atlas2 after patch 0.5.5.** Restored map names, topology, completion and
+  accessibility state, content and Delirious values, ship reads, and the
+  refreshed content-token table.
+- **LootValue after patch 0.5.5.** Restored stash and inventory item pointers
+  and anchored ground-loot labels. Special and scrollable stash tabs are
+  validated, cached, clipped, and throttled to avoid invalid reads and stalls.
+- **LootValue data refresh.** Accepts current poe2scout response shapes,
+  structured unique modifiers, and currency entries with missing metadata.
+- **AutoHotKeyTrigger startup exception.** Empty dynamic-condition expressions
+  remain uncompiled until a condition is entered.
+
 ## [2.6.0] - 2026-07-17
 
 ### Added
@@ -55,7 +100,8 @@ from your own plugins via `Core.*`.
 - **LootValue poe2scout refresh.** Accepts the current top-level array returned by
   poe2scout's leagues endpoint, while remaining compatible with the previous
   object-wrapped and string-wrapped response shapes. Currency entries with null
-  item metadata are now parsed without aborting the category.
+  item metadata and unique-item modifiers represented as structured objects are
+  now parsed without aborting the category.
 
 ## [2.5.2] - 2026-07-11
 
@@ -267,6 +313,7 @@ from your own plugins via `Core.*`.
 - Disabled plugins' settings being overwritten on close.
 - Co-op (multiplayer) read fix.
 
+[2.7.0]: https://github.com/Gordin/GameHelper2/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/Gordin/GameHelper2/compare/v2.5.2...v2.6.0
 [2.5.2]: https://github.com/Gordin/GameHelper2/compare/2.5.1...2.5.2
 [2.5.1]: https://github.com/Gordin/GameHelper2/compare/2.5.0...2.5.1

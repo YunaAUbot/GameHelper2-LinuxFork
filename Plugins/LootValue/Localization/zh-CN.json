@@ -1,5 +1,6 @@
 {
   "plugin.description": "显示地面、仓库和背包物品的市场价值。",
+  "button.refresh_prices_now": "立即刷新价格",
   "currency.chaos": "混沌",
   "currency.divine": "神圣",
   "currency.exalted": "崇高",
@@ -13,6 +14,7 @@
   "diagnostics.summary.pricing": "已定价={0}    低于阈值(<{1}ex)={2}    将绘制={3}",
   "diagnostics.window_title": "LootValue 诊断",
   "section.display": "显示",
+  "section.price_source": "价格来源",
   "settings.anchor_to_loot_tags": "锚定到掉落标签（物品堆叠时避免重叠）",
   "settings.diagnostics_window": "诊断窗口",
   "settings.font_size": "字体大小",
@@ -22,12 +24,16 @@
   "settings.highlight_from": "高亮起点（ex）",
   "settings.hide_when_game_unfocused": "游戏未处于焦点时隐藏价值",
   "settings.jitter_filter": "抖动过滤（越低越强，无延迟）",
+  "settings.league": "赛季",
   "settings.min_value_to_show": "显示最低价值（ex）",
+  "settings.refresh_interval": "刷新间隔（分钟）",
   "settings.rescan_interval": "重新扫描间隔（毫秒）",
   "settings.rescan_interval.tooltip": "位置每帧重绘；重新扫描只重新检测物品/价格。",
   "settings.reveal_unidentified_uniques": "显示未监定传奇（按图标）",
   "settings.show_overlay": "在地面物品上显示价值",
   "settings.smooth_label_motion": "平滑标签移动（速度追踪）",
   "settings.text_color": "文本颜色",
-  "settings.vertical_offset": "垂直偏移"
+  "settings.vertical_offset": "垂直偏移",
+  "status.loaded_items": "{0} 个物品 | {1} 分钟前",
+  "status.loading": "加载中..."
 }
