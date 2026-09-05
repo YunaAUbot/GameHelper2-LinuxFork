@@ -34,6 +34,8 @@ for forbidden in AutoHotKeyTrigger PickupHelper LootValue Launcher; do
 done
 
 grep -q 'GameOverlay.Linux.sln' "$BUILDER" || fail "builder does not build the Linux solution"
+grep -Fq 'dotnet=${DOTNET:-dotnet}' "$BUILDER" || fail "builder does not use the caller's portable dotnet command"
+! grep -q '/root/.dotnet' "$BUILDER" || fail "builder contains a host-specific dotnet path"
 grep -q 'publish.*GameHelper' "$BUILDER" || fail "builder does not publish GameHelper"
 grep -q -- '--self-contained true' "$BUILDER" || fail "publish is not self-contained"
 grep -q 'GenerateDocumentationFile=false' "$BUILDER" || fail "known publish XML documentation failure is not disabled"
