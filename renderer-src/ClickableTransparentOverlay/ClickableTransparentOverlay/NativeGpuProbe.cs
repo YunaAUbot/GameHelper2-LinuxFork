@@ -44,7 +44,10 @@ namespace ClickableTransparentOverlay
                 _ = Process.Start(new ProcessStartInfo
                 {
                     FileName = @"C:\\windows\\system32\\start.exe",
-                    Arguments = $"/unix \"{unixHelper}\" {bounds.X} {bounds.Y} {bounds.Width} {bounds.Height} 3600 \"{unixHeartbeat}\" {port} {Convert.ToHexString(token)}",
+                    // Zero disables the native helper's legacy wall-clock expiry.
+                    // Authenticated shutdown plus the owner heartbeat still bound
+                    // cleanup without making every healthy overlay die after an hour.
+                    Arguments = $"/unix \"{unixHelper}\" {bounds.X} {bounds.Y} {bounds.Width} {bounds.Height} 0 \"{unixHeartbeat}\" {port} {Convert.ToHexString(token)}",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 });

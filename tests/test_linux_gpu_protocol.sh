@@ -24,12 +24,27 @@ cc -Wall -Wextra -Werror -O2 "$HELPER" "${cflags[@]}" "${libs[@]}" -lm -o "$BINA
 printf '%s 0 0 0 800 600\n' "$(date +%s%3N)" > "$HEARTBEAT"
 rm -f /tmp/gamehelper2-gpu-input.log
 
+# Zero is a valid unlimited lifetime, but malformed/non-finite/negative values
+# must not be silently promoted to unlimited operation.
+for invalid_duration in invalid nan inf -1; do
+  set +e
+  "$BINARY" 0 0 800 600 "$invalid_duration" "$HEARTBEAT" "$PORT" "$TOKEN" >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ $status -eq 2 ]] || {
+    printf 'FAIL: invalid duration %s returned %s instead of 2\n' "$invalid_duration" "$status" >&2
+    exit 1
+  }
+done
+
 # The single-quoted body is an intentionally isolated child shell script.
 # shellcheck disable=SC2016
 xvfb-run -a -s '-screen 0 1280x720x24 +extension GLX +render -noreset' bash -c '
   set -euo pipefail
   helper=$1 heartbeat=$2 port=$3 token=$4
-  "$helper" 0 0 800 600 30 "$heartbeat" "$port" "$token" \
+  # Duration 0 is the production no-hard-expiry mode. The authenticated
+  # shutdown frame and owner heartbeat still bound orphan lifetime.
+  "$helper" 0 0 800 600 0 "$heartbeat" "$port" "$token" \
     >/tmp/gamehelper2-gpu-protocol.stdout 2>/tmp/gamehelper2-gpu-protocol.stderr &
   pid=$!
   trap "kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true" EXIT

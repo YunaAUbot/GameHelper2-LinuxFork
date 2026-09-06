@@ -68,6 +68,7 @@ static uint32_t u32(const unsigned char **p) { uint32_t v; memcpy(&v,*p,4); *p+=
 static uint64_t u64(const unsigned char **p) { uint64_t v; memcpy(&v,*p,8); *p+=8; return v; }
 static float f32(const unsigned char **p) { float v; memcpy(&v,*p,4); *p+=4; return v; }
 static int multiply_size(size_t a,size_t b,size_t*out){if(a&&b>SIZE_MAX/a)return 0;*out=a*b;return 1;}
+static int parse_duration(const char *text,double *duration){char *end=NULL;errno=0;double value=strtod(text,&end);if(errno||end==text||*end!='\0'||!isfinite(value)||value<0)return 0;*duration=value;return 1;}
 static int valid_dimensions(int width, int height) { return width>0&&height>0&&width<=MAX_OVERLAY_DIMENSION&&height<=MAX_OVERLAY_DIMENSION; }
 static int valid_geometry(int x,int y,int width,int height){return x>=MIN_OVERLAY_POSITION&&x<=MAX_OVERLAY_POSITION&&y>=MIN_OVERLAY_POSITION&&y<=MAX_OVERLAY_POSITION&&valid_dimensions(width,height);}
 static Window find_named_window(Display *d, Window root, const char *title) { char *name=NULL; if(XFetchName(d,root,&name)>0 && name){int match=!strcmp(name,title);XFree(name);if(match)return root;} Window r,p,*children=NULL,found=None;unsigned count=0;if(!XQueryTree(d,root,&r,&p,&children,&count))return None;for(unsigned i=0;i<count&&!found;i++)found=find_named_window(d,children[i],title);if(children)XFree(children);return found; }
@@ -290,7 +291,7 @@ cleanup:
     glDisable(GL_SCISSOR_TEST); glXSwapBuffers(glXGetCurrentDisplay(),glXGetCurrentDrawable()); (void)totalv;
 }
 int main(int argc,char **argv) {
-    unsigned char auth_token[AUTH_TOKEN_BYTES]; if(argc!=9){fprintf(stderr,"usage: %s x y width height seconds heartbeat port token\n",argv[0]);return 2;} int x=atoi(argv[1]),y=atoi(argv[2]),width=atoi(argv[3]),height=atoi(argv[4]),port=atoi(argv[7]); double duration=atof(argv[5]); if(!valid_geometry(x,y,width,height)||duration<=0||port<=0||!decode_token(argv[8],auth_token))return 2;
+    unsigned char auth_token[AUTH_TOKEN_BYTES]; if(argc!=9){fprintf(stderr,"usage: %s x y width height seconds heartbeat port token\n",argv[0]);return 2;} int x=atoi(argv[1]),y=atoi(argv[2]),width=atoi(argv[3]),height=atoi(argv[4]),port=atoi(argv[7]); double duration=0; if(!valid_geometry(x,y,width,height)||!parse_duration(argv[5],&duration)||port<=0||!decode_token(argv[8],auth_token))return 2;
     setlocale(LC_CTYPE,""); Display*d=XOpenDisplay(NULL); if(!d){fputs("gpu: XOpenDisplay failed\n",stderr);return 3;} int screen=DefaultScreen(d); poe_geometry(d,screen,&x,&y,&width,&height); int a[]={GLX_X_RENDERABLE,True,GLX_DRAWABLE_TYPE,GLX_WINDOW_BIT,GLX_RENDER_TYPE,GLX_RGBA_BIT,GLX_X_VISUAL_TYPE,GLX_TRUE_COLOR,GLX_RED_SIZE,8,GLX_GREEN_SIZE,8,GLX_BLUE_SIZE,8,GLX_ALPHA_SIZE,8,GLX_DOUBLEBUFFER,True,None};int count;GLXFBConfig*cfgs=glXChooseFBConfig(d,screen,a,&count);XVisualInfo*vi=NULL;GLXFBConfig cfg=NULL;for(int i=0;i<count;i++){XVisualInfo*c=glXGetVisualFromFBConfig(d,cfgs[i]);XRenderPictFormat*f=c?XRenderFindVisualFormat(d,c->visual):NULL;if(f&&f->direct.alphaMask){vi=c;cfg=cfgs[i];break;}if(c)XFree(c);}if(!vi){fputs("gpu: ARGB visual unavailable\n",stderr);return 4;}
     /* A managed _NET_WM_WINDOW_TYPE_DOCK can be placed below an XWayland
        borderless-fullscreen client by KWin.  This renderer is a transient,
@@ -318,7 +319,7 @@ int main(int argc,char **argv) {
     GLXContext ctx=glXCreateNewContext(d,cfg,GLX_RGBA_TYPE,NULL,True);if(!ctx||!glXMakeCurrent(d,w,ctx)){fputs("gpu: GLX failed\n",stderr);return 5;}trace_renderer();GLuint font;glGenTextures(1,&font);glBindTexture(GL_TEXTURE_2D,font);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glPixelStorei(GL_UNPACK_ALIGNMENT,1);
     int listener=socket(AF_INET,SOCK_STREAM,0), client=-1,yes=1;setsockopt(listener,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof yes);fcntl(listener,F_SETFL,fcntl(listener,F_GETFL,0)|O_NONBLOCK);struct sockaddr_in addr;memset(&addr,0,sizeof addr);addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(INADDR_LOOPBACK);addr.sin_port=htons(port);if(bind(listener,(struct sockaddr*)&addr,sizeof addr)||listen(listener,1)){perror("gpu bind");return 6;}double started=now_seconds();
     int input_mode=0,shutdown_requested=0; struct keyboard_capture keyboard={0}; struct native_textures textures={0}; struct native_texture_upload texture_upload={0}; double last_valid_heartbeat=wall_seconds(),last_client_seen=0;
-    while(!shutdown_requested&&now_seconds()-started<duration) {
+    while(!shutdown_requested&&(duration==0||now_seconds()-started<duration)) {
         double loop_now=now_seconds();if(client>=0)last_client_seen=loop_now;if(client<0&&input_mode){input_mode=0;set_input(d,w,width,height,0);}int reconnect_grace=last_client_seen>0&&loop_now-last_client_seen<=AUTHENTICATED_RECONNECT_GRACE_SECONDS;
         double heartbeat_now=wall_seconds();
         double heartbeat_timestamp=heartbeat_timestamp_seconds(argv[6]);
