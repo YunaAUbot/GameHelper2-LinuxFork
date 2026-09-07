@@ -52,7 +52,11 @@ cc -Wall -Wextra -Werror -Wno-unused-result -O2 \
   "${native_cflags[@]}" "${native_libs[@]}" -lm -o "$native_helper"
 install -m 0755 "$native_helper" "$publish/gamehelper2-gpu-overlay"
 
-mkdir -p "$publish/Plugins" "$publish/licenses"
+mkdir -p "$publish/Plugins" "$publish/licenses" "$publish/scripts"
+mkdir -p "$publish/scripts/plugin-assembly-check"
+cp "$repo_root/scripts/plugin-assembly-check/PluginAssemblyCheck.csproj" "$repo_root/scripts/plugin-assembly-check/Program.cs" "$publish/scripts/plugin-assembly-check/"
+cp "$repo_root/run-gamehelper2-linux.sh" "$publish/"
+cp "$repo_root/scripts/steam-proton-env.sh" "$repo_root/scripts/git-plugin-worker.py" "$publish/scripts/"
 cp "$repo_root/README-LINUX.md" "$publish/README-LINUX.md"
 for plugin in "${passive_plugins[@]}"; do
   source_dir="$build_output/Plugins/$plugin"
