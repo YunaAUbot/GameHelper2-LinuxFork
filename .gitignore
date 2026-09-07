@@ -20,3 +20,8 @@ Plugins/SekhemaHelper
 Plugins/StashUtility
 
 POE2Radar
+
+# Installer state and local regression evidence can contain source URLs or diagnostics.
+artifacts/
+**/__pycache__/
+**/PluginSources/

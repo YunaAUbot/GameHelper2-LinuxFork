@@ -136,6 +136,7 @@ compat_data="$POE2_LIBRARY/steamapps/compatdata/$POE2_APP_ID"
   exit 8
 }
 
+git_worker_pid=""
 helper_pid=""
 helper_pgid=""
 helper_heartbeat=""
@@ -149,6 +150,11 @@ is_own_helper_process() {
 }
 
 stop_helper() {
+  if [[ -n "$git_worker_pid" ]]; then
+    kill -TERM "$git_worker_pid" 2>/dev/null || true
+    wait "$git_worker_pid" 2>/dev/null || true
+    git_worker_pid=""
+  fi
   if [[ -n "$helper_managed_pid" ]] && is_own_helper_process "$helper_managed_pid"; then
     kill -TERM "$helper_managed_pid" 2>/dev/null || true
   fi
@@ -173,6 +179,17 @@ trap 'exit 130' INT TERM
 
 GAMEHELPER2_OVERLAY_BACKEND="${GAMEHELPER2_OVERLAY_BACKEND:-native-gpu}"
 PROTON_USE_WINED3D="${PROTON_USE_WINED3D:-1}"
+
+# Activation is local and precedes assembly discovery. Network/build work runs separately.
+if command -v python3 >/dev/null && [[ -f "$SCRIPT_DIR/scripts/git-plugin-worker.py" ]]; then
+  timeout 20s python3 "$SCRIPT_DIR/scripts/git-plugin-worker.py" activate "$(dirname -- "$GAMEHELPER2_EXE")" || {
+    echo "Plugin activation failed; refusing launch until installation recovery completes." >&2
+    exit 10
+  }
+  python3 "$SCRIPT_DIR/scripts/git-plugin-worker.py" serve "$(dirname -- "$GAMEHELPER2_EXE")" &
+  git_worker_pid=$!
+  export GAMEHELPER2_GIT_WORKER=1
+fi
 
 echo "Path of Exile 2 detected; starting GameHelper2 only."
 (

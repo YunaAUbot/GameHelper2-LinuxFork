@@ -43,6 +43,7 @@ if not re.search(r'if\s*\(this\.useNativeGpu\).*?this\.renderer\.Resize\(width, 
 PY
 grep -q 'DriverType.Hardware' "$CTO/Overlay.cs" || fail "Windows backend no longer requests the hardware D3D11 device"
 grep -q 'gamehelper2-gpu-overlay' "$CTO/NativeGpuProbe.cs" || fail "managed bridge does not resolve the packaged helper"
+grep -q 'bounds.Height} 0 .*unixHeartbeat' "$CTO/NativeGpuProbe.cs" || fail "production native compositor still has a fixed wall-clock expiry"
 grep -q 'InvalidateFont' "$CTO/NativeGpuProbe.cs" || fail "native font uploads cannot be invalidated after an atlas rebuild"
 grep -q 'NativeGpuProbe.InvalidateFont' "$CTO/Overlay.cs" || fail "runtime font updates keep using a stale native atlas"
 grep -q 'Path of Exile 2' "$HELPER" || fail "native compositor does not target the PoE2 window"

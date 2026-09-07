@@ -274,6 +274,8 @@ namespace GameHelper.Settings
                     "settings.plugin.subtitle",
                     "Enable or disable plugins. Enabled plugins get their own settings page. Changes are saved automatically."));
 
+            GitPluginInstaller.Draw();
+
             var enabledCount = PManager.Plugins.Count(p => p.Metadata.Enable);
             ImGui.TextDisabled(L.F("settings.plugin.active_count", "Active: {0} / {1}", enabledCount, PManager.Plugins.Count));
             ImGui.SameLine();
