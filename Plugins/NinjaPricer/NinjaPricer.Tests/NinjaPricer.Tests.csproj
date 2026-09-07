@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RuntimeIdentifier></RuntimeIdentifier>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.0.1" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\PriceConversion.cs" Link="Production\PriceConversion.cs" />
+    <Compile Include="..\ProviderRegistration.cs" Link="Production\ProviderRegistration.cs" />
+    <Compile Include="..\NinjaPricerSettings.cs" Link="Production\NinjaPricerSettings.cs" />
+    <Compile Include="..\NinjaPricerSettingsNormalizer.cs" Link="Production\NinjaPricerSettingsNormalizer.cs" />
+    <Compile Include="..\PriceFetcher.cs" Link="Production\PriceFetcher.cs" />
+    <Compile Include="..\LeagueProvider.cs" Link="Production\LeagueProvider.cs" />
+    <Compile Include="..\BoundedHttp.cs" Link="Production\BoundedHttp.cs" />
+    <Compile Include="..\ScoutLeaguePayload.cs" Link="Production\ScoutLeaguePayload.cs" />
+  </ItemGroup>
+</Project>

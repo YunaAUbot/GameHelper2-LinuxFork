@@ -8,7 +8,7 @@ configuration=Release
 framework=net10.0-windows
 runtime=win-x64
 build_output="$repo_root/GameHelper/bin/$configuration/$framework/$runtime"
-passive_plugins=(PreloadAlert Radar HealthBars Atlas2 PlayerBuffBar)
+passive_plugins=(PreloadAlert Radar HealthBars Atlas2 PlayerBuffBar LootValue NinjaPricer)
 
 [[ $# -le 1 ]] || { printf 'usage: %s [output-directory]\n' "$0" >&2; exit 2; }
 [[ "$output" = /* ]] || output="$PWD/$output"
@@ -38,6 +38,7 @@ trap cleanup EXIT
 
 "$dotnet" build "$repo_root/GameOverlay.Linux.sln" \
   -c "$configuration" -p:GenerateDocumentationFile=false \
+  -p:EnableWindowsTargeting=true \
   -p:SkipNativeGpuOverlayBuild=true
 "$dotnet" publish "$repo_root/GameHelper/GameHelper.csproj" \
   -c "$configuration" -f "$framework" -r "$runtime" \
@@ -62,6 +63,8 @@ for plugin in "${passive_plugins[@]}"; do
   mkdir -p "$publish/Plugins/$plugin"
   cp -a "$source_dir/." "$publish/Plugins/$plugin/"
   rm -rf -- "$publish/Plugins/$plugin/config" "$publish/Plugins/$plugin/configs"
+  rm -f -- "$publish/Plugins/$plugin/price_cache.json" \
+    "$publish/Plugins/$plugin"/price_cache.json.tmp-*
 done
 
 cp "$repo_root/renderer-src/ClickableTransparentOverlay/LICENSE" \
@@ -74,14 +77,14 @@ fi
 
 # Reject runtime state or excluded plugin content even if an upstream build
 # target starts producing it in the future.
-for forbidden in configs logs credentials AutoHotKeyTrigger PickupHelper LootValue; do
+for forbidden in configs logs credentials AutoHotKeyTrigger PickupHelper; do
   if find "$publish" \( -type d -o -type f \) -iname "$forbidden" -print -quit | grep -q .; then
     printf 'refusing to package forbidden path: %s\n' "$forbidden" >&2
     exit 1
   fi
 done
-if find "$publish" -type f \( -iname '*.log' -o -iname '.env' -o -iname 'credentials*' -o -iname 'secrets*' \) -print -quit | grep -q .; then
-  printf 'refusing to package runtime log or credential material\n' >&2
+if find "$publish" -type f \( -iname '*.log' -o -iname '.env' -o -iname 'credentials*' -o -iname 'secrets*' -o -iname 'price_cache.json' -o -iname 'price_cache.json.tmp-*' \) -print -quit | grep -q .; then
+  printf 'refusing to package runtime log, cache, or credential material\n' >&2
   exit 1
 fi
 

@@ -5,10 +5,11 @@ using System.Linq;
 using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace LootValue
+namespace NinjaPricer
 {
     public class PoeNinjaPrice
     {
@@ -48,15 +49,22 @@ namespace LootValue
         public Dictionary<string, string> PathBasenameToItemName { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
-    public static class PoeNinjaPriceFetcher
+    public static class PriceFetcher
     {
+        public const int MaxResponseBytes = 2 * 1024 * 1024;
+        public const int MaxCacheBytes = 8 * 1024 * 1024;
+        private const int MaxPages = 20;
+        private const int MaxItems = 25000;
+        private const int MaxKeys = 50000;
+        private const int MaxStringLength = 1024;
         public const int SourcePoeNinja = 0;
         public const int SourcePoe2Scout = 1;
 
         // Bump whenever the cache shape or how the art->name index is built changes, so caches written
         // by an older plugin version are discarded instead of trusted. (v2: art index now built from
-        // both poe.ninja + poe2scout icons.)
-        private const int CacheSchemaVersion = 2;
+        // both poe.ninja + poe2scout icons; v3: canonical poe.ninja rate conversion and complete
+        // provider-family coverage.)
+        private const int CacheSchemaVersion = 3;
 
         private static readonly string[] ScoutCurrencyCategories =
         {
@@ -72,13 +80,16 @@ namespace LootValue
 
         private static readonly string[] NinjaExchangeTypes =
         {
-            "Ritual", "Currency", "Runes", "Idols", "Essences", "Fragments", "Abyss", "Breach",
-            "Delirium", "Expedition", "Ultimatum", "UncutGems",
+            // Currency must come first: its canonical Chaos/Exalted/Divine rows seed conversion
+            // rates for every subsequently fetched category.
+            "Currency", "Ritual", "Runes", "Idols", "Verisium", "Essences", "Fragments", "Abyss", "Breach",
+            "Delirium", "Expedition", "Incursion", "Ultimatum", "Vaal", "VaultKeys", "UncutGems",
+            "LineageSupportGems", "SoulCores",
         };
 
         private static readonly string[] NinjaStashTypes =
         {
-            "UniqueArmours", "UniqueAccessories", "UniqueCharms", "UniqueWeapons",
+            "UniqueArmours", "UniqueAccessories", "UniqueCharms", "UniqueWeapons", "UniqueFlasks", "UniqueJewels",
         };
 
         private static readonly HashSet<string> GenericLookupNames = new(StringComparer.OrdinalIgnoreCase)
@@ -104,7 +115,7 @@ namespace LootValue
             ["sapphireuniquecharm"] = "Breath of the Mountains",
         };
 
-        private static readonly HttpClient Http = CreateHttpClient();
+        private static HttpClient Http = CreateHttpClient();
 
         private static readonly object Gate = new();
         private static Dictionary<string, double> flatPricesChaos = new(StringComparer.OrdinalIgnoreCase);
@@ -115,35 +126,90 @@ namespace LootValue
         private static string pluginDir = string.Empty;
         private static string cacheFilePath = string.Empty;
         private static DateTime lastFetchTime = DateTime.MinValue;
+        private static string lastFetchError = string.Empty;
+        private static int consecutiveFailureCount;
+        private static DateTime nextRetryUtc = DateTime.MinValue;
         private static int configuredSource = SourcePoe2Scout;
-        private static string configuredLeague = "Forbidden Rites";
+        private static string configuredLeague = "Runes of Aldur";
         private static int configuredRefreshMinutes = 5;
         private static double chaosPerDivine = 12.0;
         private static double chaosPerExalted = 0.1;
+        private static long activationGeneration;
+        private static CancellationTokenSource? activeCancellation;
+        private static Task<bool>? activeTask;
+        private static bool pendingRefresh;
+        private static bool enabled;
+
+        private sealed record FetchSettings(int Source, string League, int RefreshMinutes, string PluginDirectory, string CachePath);
 
         public static double DivineToExaltedRate { get; private set; } = 80.0;
         public static int LoadedItemCount { get; private set; }
         public static DateTime LastFetchUtc => lastFetchTime;
         public static bool IsFetching => isFetching;
+        internal static string LastFetchError { get { lock (Gate) return lastFetchError; } }
+        public static int ConsecutiveFailureCount { get { lock (Gate) return consecutiveFailureCount; } }
+        public static DateTime NextRetryUtc { get { lock (Gate) return nextRetryUtc; } }
+        public static bool ShouldShowFailureWarning { get { lock (Gate) return consecutiveFailureCount >= 3; } }
+
+        public static string GetFailureWarningText(DateTime utcNow)
+        {
+            lock (Gate)
+            {
+                if (consecutiveFailureCount < 3) return string.Empty;
+                var remaining = nextRetryUtc > utcNow ? nextRetryUtc - utcNow : TimeSpan.Zero;
+                var retryText = remaining.TotalMinutes >= 1
+                    ? $"{Math.Ceiling(remaining.TotalMinutes):0} min"
+                    : $"{Math.Max(1, Math.Ceiling(remaining.TotalSeconds)):0} sec";
+                var error = lastFetchError.Length <= 240 ? lastFetchError : lastFetchError[..240] + "...";
+                return $"Price refresh failed {consecutiveFailureCount} consecutive times. Next retry in {retryText}.\n{error}";
+            }
+        }
 
         private static HttpClient CreateHttpClient()
         {
             var client = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
-            client.DefaultRequestHeaders.Add("User-Agent", "LootValue-GameHelper-Plugin");
+            client.DefaultRequestHeaders.Add("User-Agent", "NinjaPricer-GameHelper-Plugin");
             return client;
         }
 
         public static void Configure(int priceSource, string league, int refreshIntervalMinutes)
         {
-            configuredSource = priceSource;
-            configuredLeague = string.IsNullOrWhiteSpace(league) ? "Forbidden Rites" : league.Trim();
-            configuredRefreshMinutes = Math.Max(1, refreshIntervalMinutes);
+            lock (Gate)
+            {
+                var source = priceSource == SourcePoeNinja ? SourcePoeNinja : SourcePoe2Scout;
+                var normalizedLeague = BoundString(string.IsNullOrWhiteSpace(league) ? "Runes of Aldur" : league.Trim());
+                var refresh = Math.Clamp(refreshIntervalMinutes, 1, 120);
+                var identityChanged = source != configuredSource ||
+                    !string.Equals(normalizedLeague, configuredLeague, StringComparison.Ordinal);
+                configuredSource = source;
+                configuredLeague = normalizedLeague;
+                configuredRefreshMinutes = refresh;
+                if (identityChanged)
+                {
+                    activationGeneration++;
+                    ClearPublishedDataLocked();
+                    ResetFailureHealthLocked();
+                    if (isFetching)
+                    {
+                        pendingRefresh = true;
+                    }
+                    else if (enabled && !string.IsNullOrEmpty(pluginDir))
+                    {
+                        StartFetchLocked();
+                    }
+                }
+            }
         }
 
         public static void Initialize(string pluginDirectory)
         {
-            pluginDir = pluginDirectory;
-            cacheFilePath = Path.Combine(pluginDirectory, "price_cache.json");
+            lock (Gate)
+            {
+                enabled = true;
+                activationGeneration++;
+                pluginDir = pluginDirectory;
+                cacheFilePath = Path.Combine(pluginDirectory, "price_cache.json");
+            }
 
             if (TryLoadCacheFromDisk())
             {
@@ -161,18 +227,55 @@ namespace LootValue
 
         public static void RefreshIfNeeded()
         {
-            if (isFetching || pluginDir == null || pluginDir.Length == 0) return;
-            if (DateTime.UtcNow - lastFetchTime < TimeSpan.FromMinutes(configuredRefreshMinutes)) return;
-            StartFetch();
+            lock (Gate)
+            {
+                if (!enabled || isFetching || string.IsNullOrEmpty(pluginDir)) return;
+                var now = DateTime.UtcNow;
+                if (consecutiveFailureCount > 0)
+                {
+                    if (now < nextRetryUtc) return;
+                }
+                else if (now - lastFetchTime < TimeSpan.FromMinutes(configuredRefreshMinutes))
+                {
+                    return;
+                }
+                StartFetchLocked();
+            }
+        }
+
+        private static TimeSpan CalculateRetryDelay(int consecutiveFailures, int source, string league, int refreshMinutes)
+        {
+            var exponent = Math.Clamp(consecutiveFailures - 1, 0, 10);
+            var capSeconds = TimeSpan.FromMinutes(Math.Clamp(refreshMinutes, 1, 30)).TotalSeconds;
+            var baseSeconds = Math.Min(30.0 * Math.Pow(2, exponent), capSeconds);
+
+            // Stable per provider/league/attempt jitter avoids synchronized retry spikes without flaky tests.
+            uint hash = 2166136261;
+            hash = (hash ^ (uint)source) * 16777619;
+            foreach (var character in league)
+                hash = (hash ^ character) * 16777619;
+            hash = (hash ^ (uint)Math.Max(1, consecutiveFailures)) * 16777619;
+            var jitter = 0.8 + (hash % 4001) / 10000.0;
+            return TimeSpan.FromSeconds(baseSeconds * jitter);
         }
 
         public static void ForceRefresh(string pluginDirectory, bool ignoreCooldown = false)
         {
-            if (isFetching) return;
-            if (!ignoreCooldown && DateTime.UtcNow - lastFetchTime < TimeSpan.FromSeconds(30)) return;
-            pluginDir = pluginDirectory;
-            cacheFilePath = Path.Combine(pluginDirectory, "price_cache.json");
-            StartFetch();
+            lock (Gate)
+            {
+                if (!enabled) return;
+                // Configure() already starts (or queues) the one fetch needed for a source/league change.
+                // Its UI call uses ignoreCooldown=true; do not turn that same active fetch into a duplicate.
+                if (isFetching)
+                {
+                    if (!ignoreCooldown) pendingRefresh = true;
+                    return;
+                }
+                if (!ignoreCooldown && DateTime.UtcNow - lastFetchTime < TimeSpan.FromSeconds(30)) return;
+                pluginDir = pluginDirectory;
+                cacheFilePath = Path.Combine(pluginDirectory, "price_cache.json");
+                StartFetchLocked();
+            }
         }
 
         public static bool TryResolveDisplayName(string internalPathBasename, out string displayName)
@@ -250,6 +353,14 @@ namespace LootValue
             lock (Gate)
             {
                 return chaosPerDivine;
+            }
+        }
+
+        public static double GetChaosPerExalted()
+        {
+            lock (Gate)
+            {
+                return chaosPerExalted;
             }
         }
 
@@ -523,15 +634,60 @@ namespace LootValue
             }
         }
 
-        private static void StartFetch()
+        private static void ClearPublishedDataLocked()
         {
-            if (isFetching) return;
-            isFetching = true;
-            Task.Run(FetchPricesAsync);
+            flatPricesChaos = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            uniqueListingsByName = new Dictionary<string, List<UniquePriceListing>>(StringComparer.OrdinalIgnoreCase);
+            pathBasenameToItemName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            lastFetchTime = DateTime.MinValue;
+            LoadedItemCount = 0;
+            chaosPerDivine = 12.0;
+            chaosPerExalted = 0.1;
+            DivineToExaltedRate = 80.0;
         }
 
-        private static async Task FetchPricesAsync()
+        private static void ResetFailureHealthLocked()
         {
+            lastFetchError = string.Empty;
+            consecutiveFailureCount = 0;
+            nextRetryUtc = DateTime.MinValue;
+        }
+
+        private static void StartFetch()
+        {
+            lock (Gate)
+            {
+                enabled = true;
+                if (isFetching) { pendingRefresh = true; return; }
+                StartFetchLocked();
+            }
+        }
+
+        private static void StartFetchLocked()
+        {
+            isFetching = true;
+            activeCancellation?.Dispose();
+            activeCancellation = new CancellationTokenSource();
+            var generation = activationGeneration;
+            var settings = new FetchSettings(configuredSource, configuredLeague, configuredRefreshMinutes, pluginDir, cacheFilePath);
+            var token = activeCancellation.Token;
+            activeTask = Task.Run(() => FetchPricesAsync(settings, generation, token));
+        }
+
+        public static void Shutdown()
+        {
+            lock (Gate)
+            {
+                enabled = false;
+                pendingRefresh = false;
+                activationGeneration++;
+                activeCancellation?.Cancel();
+            }
+        }
+
+        private static async Task<bool> FetchPricesAsync(FetchSettings settings, long generation, CancellationToken token)
+        {
+            var success = false;
             try
             {
                 var flat = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -540,27 +696,32 @@ namespace LootValue
                 double divChaos = chaosPerDivine;
                 double exChaos = chaosPerExalted;
 
-                if (configuredSource == SourcePoe2Scout)
+                if (settings.Source == SourcePoe2Scout)
                 {
-                    var rates = await FetchFromScoutAsync(flat, uniques, pathNames, divChaos, exChaos).ConfigureAwait(false);
+                    var rates = await FetchFromScoutAsync(settings, flat, uniques, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
                     divChaos = rates.DivChaos;
                     exChaos = rates.ExChaos;
 
                     // Scout unique prices are often too low; merge poe.ninja stash uniques as a floor/ceiling check.
                     // pathNames is shared so the art->name index is built from BOTH sources (union).
-                    var ninjaStashRates = await FetchNinjaStashOverviewsAsync(flat, pathNames, divChaos, exChaos).ConfigureAwait(false);
+                    var ninjaStashRates = await FetchNinjaStashOverviewsAsync(settings, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
                     divChaos = ninjaStashRates.DivChaos;
                     exChaos = ninjaStashRates.ExChaos;
                 }
                 else
                 {
-                    var rates = await FetchFromNinjaAsync(flat, pathNames, divChaos, exChaos).ConfigureAwait(false);
+                    var rates = await FetchFromNinjaAsync(settings, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
                     divChaos = rates.DivChaos;
                     exChaos = rates.ExChaos;
                 }
 
+                var fetchedAt = DateTime.UtcNow;
                 lock (Gate)
                 {
+                    token.ThrowIfCancellationRequested();
+                    if (!enabled || generation != activationGeneration) return false;
+                    ValidateFetched(flat, uniques, pathNames, divChaos, exChaos);
+                    if (!SaveCacheToDisk(settings, generation, token, flat, uniques, pathNames, divChaos, exChaos, fetchedAt)) return false;
                     flatPricesChaos = flat;
                     uniqueListingsByName = uniques;
                     pathBasenameToItemName = pathNames;
@@ -569,13 +730,45 @@ namespace LootValue
                     if (chaosPerExalted > 0)
                         DivineToExaltedRate = chaosPerDivine / chaosPerExalted;
                     LoadedItemCount = flat.Count + uniques.Values.Sum(v => v.Count);
-                    lastFetchTime = DateTime.UtcNow;
+                    lastFetchTime = fetchedAt;
+                    ResetFailureHealthLocked();
                 }
-
-                SaveCacheToDisk();
+                success = true;
             }
-            catch { }
-            finally { isFetching = false; }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                // Expected lifecycle/configuration cancellation is not a provider failure.
+            }
+            catch (Exception ex)
+            {
+                lock (Gate)
+                {
+                    if (enabled && generation == activationGeneration)
+                    {
+                        consecutiveFailureCount++;
+                        lastFetchError = $"{ex.GetType().Name}: {ex.Message}";
+                        nextRetryUtc = DateTime.UtcNow + CalculateRetryDelay(
+                            consecutiveFailureCount,
+                            settings.Source,
+                            settings.League,
+                            settings.RefreshMinutes);
+                    }
+                }
+                Console.WriteLine($"[NinjaPricer] Price refresh failed: {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                lock (Gate)
+                {
+                    isFetching = false;
+                    if (enabled && pendingRefresh)
+                    {
+                        pendingRefresh = false;
+                        StartFetchLocked();
+                    }
+                }
+            }
+            return success;
         }
 
         private readonly struct RatePair
@@ -591,132 +784,112 @@ namespace LootValue
         }
 
         private static async Task<RatePair> FetchFromScoutAsync(
+            FetchSettings settings,
             Dictionary<string, double> flat,
             Dictionary<string, List<UniquePriceListing>> uniques,
             Dictionary<string, string> pathNames,
             double divChaos,
-            double exChaos)
+            double exChaos,
+            CancellationToken token)
         {
-            var league = Uri.EscapeDataString(configuredLeague);
-            var rates = await UpdateScoutRatesAsync(league, divChaos, exChaos).ConfigureAwait(false);
+            var league = Uri.EscapeDataString(settings.League);
+            var rates = await UpdateScoutRatesAsync(settings, league, divChaos, exChaos, token).ConfigureAwait(false);
             divChaos = rates.DivChaos;
             exChaos = rates.ExChaos;
 
             foreach (var category in ScoutCurrencyCategories)
             {
-                await FetchScoutCurrencyCategoryAsync(league, category, flat, pathNames).ConfigureAwait(false);
+                await FetchScoutCurrencyCategoryAsync(league, category, flat, pathNames, token).ConfigureAwait(false);
             }
 
             foreach (var category in ScoutUniqueCategories)
             {
-                await FetchScoutUniqueCategoryAsync(league, category, uniques, pathNames).ConfigureAwait(false);
+                await FetchScoutUniqueCategoryAsync(league, category, uniques, pathNames, token).ConfigureAwait(false);
             }
 
             return new RatePair(divChaos, exChaos);
         }
 
-        private static async Task<RatePair> UpdateScoutRatesAsync(string leagueEscaped, double divChaos, double exChaos)
+        private static async Task<RatePair> UpdateScoutRatesAsync(FetchSettings settings, string leagueEscaped, double divChaos, double exChaos, CancellationToken token)
         {
-            try
-            {
-                var json = await Http.GetStringAsync("https://poe2scout.com/api/poe2/Leagues").ConfigureAwait(false);
-                var token = ParseScoutResponse(json);
-                var leagues = token as JArray;
-                if (leagues == null && token is JObject root)
-                {
-                    leagues = root["value"] as JArray ?? root["Value"] as JArray;
-                }
-
-                if (leagues == null) return new RatePair(divChaos, exChaos);
+                var json = await GetJsonAsync("https://poe2scout.com/api/poe2/Leagues", token).ConfigureAwait(false);
+                var leagues = ScoutLeaguePayload.ParseLeagueArray(json, 100);
 
                 foreach (var league in leagues)
                 {
-                    if (!string.Equals(league["Value"]?.ToString(), configuredLeague, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(league["Value"]?.ToString(), settings.League, StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     var chaosDiv = league["ChaosDivinePrice"]?.Value<double?>() ?? 0;
-                    if (chaosDiv > 0) divChaos = chaosDiv;
+                    if (IsValidPrice(chaosDiv)) divChaos = chaosDiv;
 
                     var divEx = league["DivinePrice"]?.Value<double?>() ?? 0;
-                    if (divEx > 0 && chaosDiv > 0)
+                    if (IsValidPrice(divEx) && IsValidPrice(chaosDiv))
                         exChaos = chaosDiv / divEx;
                     break;
                 }
-            }
-            catch { }
-
-            try
-            {
                 var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Currencies/ByCategory?Category=currency&ReferenceCurrency=chaos&PerPage=250&Page=1";
-                var json = await Http.GetStringAsync(url).ConfigureAwait(false);
-                var items = (ParseScoutResponse(json) as JObject)?["Items"] as JArray;
-                if (items != null)
+                json = await GetJsonAsync(url, token).ConfigureAwait(false);
+                var items = ScoutLeaguePayload.RequireObjectArray(
+                    JObject.Parse(json)["Items"],
+                    250,
+                    "currency items");
+                if (items.Count > 0)
                 {
                     foreach (var item in items)
                     {
                         var text = item["Text"]?.ToString();
                         var price = item["CurrentPrice"]?.Value<double?>() ?? 0;
-                        if (string.IsNullOrEmpty(text) || price <= 0) continue;
+                        if (!IsBounded(text) || !IsValidPrice(price)) continue;
 
-                        if (text.Contains("Divine Orb", StringComparison.OrdinalIgnoreCase))
+                        if (text!.Contains("Divine Orb", StringComparison.OrdinalIgnoreCase))
                             divChaos = price;
                         if (text.Contains("Exalted Orb", StringComparison.OrdinalIgnoreCase))
                             exChaos = price;
                     }
                 }
-            }
-            catch { }
-
             return new RatePair(divChaos, exChaos);
-        }
-
-        private static JToken ParseScoutResponse(string json)
-        {
-            var token = JToken.Parse(json);
-            if (token.Type == JTokenType.String && token.Value<string>() is { } nestedJson)
-            {
-                token = JToken.Parse(nestedJson);
-            }
-
-            return token;
         }
 
         private static async Task FetchScoutCurrencyCategoryAsync(
             string leagueEscaped,
             string category,
             Dictionary<string, double> flat,
-            Dictionary<string, string> pathNames)
+            Dictionary<string, string> pathNames,
+            CancellationToken token)
         {
             var page = 1;
             var pages = 1;
             while (page <= pages)
             {
-                try
-                {
+                token.ThrowIfCancellationRequested();
                     var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Currencies/ByCategory?Category={category}&ReferenceCurrency=chaos&PerPage=250&Page={page}";
-                    var json = await Http.GetStringAsync(url).ConfigureAwait(false);
-                    if (ParseScoutResponse(json) is not JObject data) break;
+                    var json = await GetJsonAsync(url, token).ConfigureAwait(false);
+                    var data = JObject.Parse(json);
                     pages = data["Pages"]?.Value<int?>() ?? 1;
+                    if (pages < 0 || pages > MaxPages) throw new InvalidDataException("Invalid page count.");
 
-                    if (data["Items"] is not JArray items) break;
+                    var items = ScoutLeaguePayload.RequireObjectArray(data["Items"], 250, "currency items");
+                    if (pages == 0)
+                    {
+                        if (page != 1 || items.Count != 0)
+                            throw new InvalidDataException("Contradictory zero-page category response.");
+                        break;
+                    }
 
-                    foreach (var item in items.OfType<JObject>())
+                    foreach (var item in items)
                     {
                         var price = item["CurrentPrice"]?.Value<double?>() ?? 0;
-                        if (price <= 0) continue;
+                        if (!IsValidPrice(price)) continue;
 
                         var text = item["Text"]?.ToString();
-                        var metadata = item["ItemMetadata"] as JObject;
                         AddFlatPrice(flat, text, price);
                         AddFlatPrice(flat, item["ApiId"]?.ToString(), price);
-                        AddFlatPrice(flat, metadata?["name"]?.ToString(), price);
-                        AddFlatPrice(flat, metadata?["base_type"]?.ToString(), price);
+                        AddFlatPrice(flat, item["ItemMetadata"]?["name"]?.ToString(), price);
+                        AddFlatPrice(flat, item["ItemMetadata"]?["base_type"]?.ToString(), price);
                         IndexPathName(pathNames, item["ApiId"]?.ToString(), text);
                         IndexPathName(pathNames, ExtractIconBasename(item["IconUrl"]?.ToString()), text);
                     }
-                }
-                catch { break; }
-
                 page++;
             }
         }
@@ -725,82 +898,85 @@ namespace LootValue
             string leagueEscaped,
             string category,
             Dictionary<string, List<UniquePriceListing>> uniques,
-            Dictionary<string, string> pathNames)
+            Dictionary<string, string> pathNames,
+            CancellationToken token)
         {
             var page = 1;
             var pages = 1;
             while (page <= pages)
             {
-                try
-                {
+                token.ThrowIfCancellationRequested();
                     var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Uniques/ByCategory?Category={category}&ReferenceCurrency=chaos&PerPage=250&Page={page}";
-                    var json = await Http.GetStringAsync(url).ConfigureAwait(false);
-                    if (ParseScoutResponse(json) is not JObject data) break;
+                    var json = await GetJsonAsync(url, token).ConfigureAwait(false);
+                    var data = JObject.Parse(json);
                     pages = data["Pages"]?.Value<int?>() ?? 1;
-                    if (data["Items"] is not JArray items) break;
+                    if (pages < 0 || pages > MaxPages) throw new InvalidDataException("Invalid page count.");
+                    var items = ScoutLeaguePayload.RequireObjectArray(data["Items"], 250, "unique items");
+                    if (pages == 0)
+                    {
+                        if (page != 1 || items.Count != 0)
+                            throw new InvalidDataException("Contradictory zero-page category response.");
+                        break;
+                    }
 
-                    foreach (var item in items.OfType<JObject>())
+                    foreach (var item in items)
                     {
                         var price = item["CurrentPrice"]?.Value<double?>() ?? 0;
-                        if (price <= 0) continue;
+                        if (!IsValidPrice(price)) continue;
 
-                        var metadata = item["ItemMetadata"] as JObject;
                         var listing = new UniquePriceListing
                         {
                             Name = item["Name"]?.ToString() ?? string.Empty,
                             Text = item["Text"]?.ToString() ?? string.Empty,
-                            BaseType = item["Type"]?.ToString() ?? metadata?["base_type"]?.ToString() ?? string.Empty,
+                            BaseType = item["Type"]?.ToString() ?? item["ItemMetadata"]?["base_type"]?.ToString() ?? string.Empty,
                             PriceChaos = price,
                             ExplicitMods = CombineModLists(
-                                ReadScoutModList(metadata?["implicit_mods"]),
-                                ReadScoutModList(metadata?["explicit_mods"])),
+                                ParseScoutModifiers(item["ItemMetadata"]?["implicit_mods"]),
+                                ParseScoutModifiers(item["ItemMetadata"]?["explicit_mods"])),
                         };
 
                         AddUniqueListing(uniques, listing);
                         IndexPathName(pathNames, ExtractIconBasename(item["IconUrl"]?.ToString()), listing.Name);
                         IndexPathName(pathNames, listing.Name, listing.Name);
                     }
-                }
-                catch { break; }
-
                 page++;
             }
-        }
-
-        private static List<string> ReadScoutModList(JToken? token)
-        {
-            var mods = new List<string>();
-            if (token is not JArray entries)
-                return mods;
-
-            foreach (var entry in entries)
-            {
-                var description = entry switch
-                {
-                    JValue { Type: JTokenType.String } value => value.Value<string>(),
-                    JObject value => value["description"]?.ToString(),
-                    _ => null,
-                };
-
-                if (!string.IsNullOrWhiteSpace(description))
-                    mods.Add(description.Trim());
-            }
-
-            return mods;
         }
 
         private static List<string> CombineModLists(IReadOnlyList<string>? first, IReadOnlyList<string>? second)
         {
             var mods = new List<string>();
-            if (first != null) mods.AddRange(first);
-            if (second != null) mods.AddRange(second);
+            if ((first?.Count ?? 0) + (second?.Count ?? 0) > 100) throw new InvalidDataException("Too many modifiers.");
+            if (first != null) mods.AddRange(first.Where(IsBounded));
+            if (second != null) mods.AddRange(second.Where(IsBounded));
             return mods;
+        }
+
+        private static IReadOnlyList<string> ParseScoutModifiers(JToken? token)
+        {
+            if (token == null || token.Type == JTokenType.Null) return Array.Empty<string>();
+            if (token is not JArray values) throw new InvalidDataException("Invalid modifier list.");
+            if (values.Count > 100) throw new InvalidDataException("Too many modifiers.");
+
+            var modifiers = new List<string>(values.Count);
+            foreach (var value in values)
+            {
+                var description = value.Type == JTokenType.String
+                    ? value.ToString()
+                    : value is JObject obj && obj["description"]?.Type == JTokenType.String
+                        ? obj["description"]!.ToString()
+                        : null;
+                if (IsBounded(description)) modifiers.Add(description!);
+            }
+            return modifiers;
         }
 
         private static void IndexPathName(Dictionary<string, string> pathNames, string? pathBasename, string? displayName)
         {
-            if (string.IsNullOrWhiteSpace(pathBasename) || string.IsNullOrWhiteSpace(displayName)) return;
-            pathNames[NormalizeKey(pathBasename)] = displayName.Trim();
+            if (!IsBounded(pathBasename) || !IsBounded(displayName)) return;
+            var key = NormalizeKey(pathBasename!);
+            if (!pathNames.ContainsKey(key) && pathNames.Count >= MaxKeys) throw new InvalidDataException("Too many path keys.");
+            pathNames[key] = displayName!.Trim();
         }
 
         private static string ExtractIconBasename(string? iconUrl)
@@ -817,15 +993,18 @@ namespace LootValue
 
         private static void AddFlatPrice(Dictionary<string, double> flat, string? key, double price)
         {
-            if (string.IsNullOrWhiteSpace(key) || price <= 0) return;
-            var norm = NormalizeKey(key);
+            if (!IsBounded(key) || !IsValidPrice(price)) return;
+            var norm = NormalizeKey(key!);
+            if (norm.Length == 0 || norm.Length > MaxStringLength) return;
+            if (!flat.ContainsKey(norm) && flat.Count >= MaxKeys) throw new InvalidDataException("Too many price keys.");
             if (!flat.ContainsKey(norm) || flat[norm] < price)
                 flat[norm] = price;
         }
 
         private static void AddUniqueListing(Dictionary<string, List<UniquePriceListing>> uniques, UniquePriceListing listing)
         {
-            if (string.IsNullOrWhiteSpace(listing.Name)) return;
+            if (!IsBounded(listing.Name) || !IsValidPrice(listing.PriceChaos)) return;
+            if (uniques.Values.Sum(x => x.Count) >= MaxItems) throw new InvalidDataException("Too many unique listings.");
 
             void add(string key)
             {
@@ -833,6 +1012,7 @@ namespace LootValue
                 var norm = NormalizeKey(key);
                 if (!uniques.TryGetValue(norm, out var list))
                 {
+                    if (uniques.Count >= MaxKeys) throw new InvalidDataException("Too many unique keys.");
                     list = new List<UniquePriceListing>();
                     uniques[norm] = list;
                 }
@@ -845,43 +1025,43 @@ namespace LootValue
                 add($"{listing.Name} {listing.BaseType}");
         }
 
-        private static async Task<RatePair> FetchFromNinjaAsync(Dictionary<string, double> flat, Dictionary<string, string> pathNames, double divChaos, double exChaos)
+        private static async Task<RatePair> FetchFromNinjaAsync(FetchSettings settings, Dictionary<string, double> flat, Dictionary<string, string> pathNames, double divChaos, double exChaos, CancellationToken token)
         {
-            var leagueParam = Uri.EscapeDataString(configuredLeague).Replace("%20", "+");
+            var leagueParam = Uri.EscapeDataString(settings.League).Replace("%20", "+");
 
             foreach (var type in NinjaExchangeTypes)
             {
                 var url = $"https://poe.ninja/poe2/api/economy/exchange/current/overview?league={leagueParam}&type={type}";
-                var rates = await FetchNinjaExchangeApi(url, flat, pathNames, divChaos, exChaos).ConfigureAwait(false);
+                var rates = await FetchNinjaExchangeApi(url, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
                 divChaos = rates.DivChaos;
                 exChaos = rates.ExChaos;
             }
 
-            return await FetchNinjaStashOverviewsAsync(flat, pathNames, divChaos, exChaos).ConfigureAwait(false);
+            return await FetchNinjaStashOverviewsAsync(settings, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
         }
 
         private static async Task<RatePair> FetchNinjaStashOverviewsAsync(
+            FetchSettings settings,
             Dictionary<string, double> flat,
             Dictionary<string, string> pathNames,
             double divChaos,
-            double exChaos)
+            double exChaos,
+            CancellationToken token)
         {
-            var leagueParam = Uri.EscapeDataString(configuredLeague).Replace("%20", "+");
+            var leagueParam = Uri.EscapeDataString(settings.League).Replace("%20", "+");
 
             foreach (var type in NinjaStashTypes)
             {
                 var url = $"https://poe.ninja/poe2/api/economy/stash/current/item/overview?league={leagueParam}&type={type}";
-                exChaos = await FetchNinjaStashApi(url, flat, pathNames, divChaos, exChaos).ConfigureAwait(false);
+                exChaos = await FetchNinjaStashApi(url, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
             }
 
             return new RatePair(divChaos, exChaos);
         }
 
-        private static async Task<RatePair> FetchNinjaExchangeApi(string url, Dictionary<string, double> flat, Dictionary<string, string> pathNames, double divChaos, double exChaos)
+        private static async Task<RatePair> FetchNinjaExchangeApi(string url, Dictionary<string, double> flat, Dictionary<string, string> pathNames, double divChaos, double exChaos, CancellationToken token)
         {
-            try
-            {
-                var response = await Http.GetStringAsync(url).ConfigureAwait(false);
+                var response = await GetJsonAsync(url, token).ConfigureAwait(false);
                 var data = JObject.Parse(response);
 
                 var primaryCurrency = data["core"]?["primary"]?.ToString() ?? "divine";
@@ -889,56 +1069,76 @@ namespace LootValue
                 if (rateToken != null)
                 {
                     var r = rateToken.Value<double>();
-                    if (r > 0) DivineToExaltedRate = r;
+                    if (!IsValidPrice(r)) throw new InvalidDataException("Invalid rate.");
                 }
 
                 var idToName = new Dictionary<string, string>();
                 var idToIcon = new Dictionary<string, string>();
-                if (data["items"] is JArray itemsArray)
+                if (data["items"] is not JArray itemsArray)
+                    throw new InvalidDataException("Missing items.");
+                if (itemsArray.Count > MaxItems) throw new InvalidDataException("Too many items.");
+                foreach (var item in itemsArray)
                 {
-                    foreach (var item in itemsArray)
-                    {
-                        var id = item["id"]?.ToString();
-                        if (id == null) continue;
-                        var name = item["name"]?.ToString();
-                        if (name != null) idToName[id] = name;
-                        var icon = item["image"]?.ToString() ?? item["icon"]?.ToString();
-                        if (!string.IsNullOrEmpty(icon)) idToIcon[id] = icon;
-                    }
+                    var id = item["id"]?.ToString();
+                    if (!IsBounded(id)) continue;
+                    var name = item["name"]?.ToString();
+                    if (IsBounded(name)) idToName[id!] = name!;
+                    var icon = item["image"]?.ToString() ?? item["icon"]?.ToString();
+                    if (IsBounded(icon)) idToIcon[id!] = icon!;
                 }
 
-                if (data["lines"] is JArray lines)
+                if (data["lines"] is not JArray lines)
+                    throw new InvalidDataException("Missing lines.");
+                if (lines.Count > MaxItems) throw new InvalidDataException("Too many lines.");
+
+                // primaryValue is denominated in the response's primary currency. Establish
+                // primary-to-chaos from the exact Chaos Orb row before converting any rows;
+                // carrying the preceding refresh's rate compounds every subsequent refresh.
+                if (!primaryCurrency.Equals("chaos", StringComparison.OrdinalIgnoreCase))
                 {
+                    var chaosPrimaryValue = 0.0;
                     foreach (var line in lines)
                     {
                         var id = line["id"]?.ToString();
-                        if (id == null || !idToName.TryGetValue(id, out var name)) continue;
+                        if (id == null || !idToName.TryGetValue(id, out var rowName) ||
+                            !rowName.Equals("Chaos Orb", StringComparison.OrdinalIgnoreCase)) continue;
+                        chaosPrimaryValue = line["primaryValue"]?.Value<double>() ?? 0.0;
+                        break;
+                    }
 
-                        var pval = line["primaryValue"]?.Value<double>() ?? 0.0;
-                        if (pval <= 0) continue;
-
-                        var chaos = PrimaryValueToChaos(pval, primaryCurrency, divChaos, exChaos);
-                        AddFlatPrice(flat, name, chaos);
-                        if (idToIcon.TryGetValue(id, out var iconUrl))
-                            IndexPathName(pathNames, ExtractIconBasename(iconUrl), name);
-
-                        if (name.Contains("Divine", StringComparison.OrdinalIgnoreCase))
-                            divChaos = chaos;
-                        if (name.Contains("Exalted", StringComparison.OrdinalIgnoreCase))
-                            exChaos = chaos;
+                    if (IsValidPrice(chaosPrimaryValue))
+                    {
+                        if (primaryCurrency.Equals("exalted", StringComparison.OrdinalIgnoreCase))
+                            exChaos = 1.0 / chaosPrimaryValue;
+                        else if (primaryCurrency.Equals("divine", StringComparison.OrdinalIgnoreCase))
+                            divChaos = 1.0 / chaosPrimaryValue;
                     }
                 }
-            }
-            catch { }
 
+                foreach (var line in lines)
+                {
+                    var id = line["id"]?.ToString();
+                    if (id == null || !idToName.TryGetValue(id, out var name)) continue;
+
+                    var pval = line["primaryValue"]?.Value<double>() ?? 0.0;
+                    if (!IsValidPrice(pval)) continue;
+
+                    var chaos = PrimaryValueToChaos(pval, primaryCurrency, divChaos, exChaos);
+                    AddFlatPrice(flat, name, chaos);
+                    if (idToIcon.TryGetValue(id, out var iconUrl))
+                        IndexPathName(pathNames, ExtractIconBasename(iconUrl), name);
+
+                    if (name.Equals("Divine Orb", StringComparison.OrdinalIgnoreCase))
+                        divChaos = chaos;
+                    if (name.Equals("Exalted Orb", StringComparison.OrdinalIgnoreCase))
+                        exChaos = chaos;
+                }
             return new RatePair(divChaos, exChaos);
         }
 
-        private static async Task<double> FetchNinjaStashApi(string url, Dictionary<string, double> flat, Dictionary<string, string> pathNames, double divChaos, double exChaos)
+        private static async Task<double> FetchNinjaStashApi(string url, Dictionary<string, double> flat, Dictionary<string, string> pathNames, double divChaos, double exChaos, CancellationToken token)
         {
-            try
-            {
-                var response = await Http.GetStringAsync(url).ConfigureAwait(false);
+                var response = await GetJsonAsync(url, token).ConfigureAwait(false);
                 var data = JObject.Parse(response);
 
                 var primaryCurrency = data["core"]?["primary"]?.ToString() ?? "exalted";
@@ -946,28 +1146,25 @@ namespace LootValue
                 if (rateToken != null)
                 {
                     var r = rateToken.Value<double>();
-                    if (r > 0) DivineToExaltedRate = r;
+                    if (!IsValidPrice(r)) throw new InvalidDataException("Invalid rate.");
                 }
 
-                if (data["lines"] is JArray lines)
+                if (data["lines"] is not JArray lines)
+                    throw new InvalidDataException("Missing lines.");
+                if (lines.Count > MaxItems) throw new InvalidDataException("Too many lines.");
+                foreach (var line in lines)
                 {
-                    foreach (var line in lines)
-                    {
-                        var name = line["name"]?.ToString();
-                        var baseType = line["baseType"]?.ToString() ?? string.Empty;
-                        var pval = line["primaryValue"]?.Value<double>() ?? 0.0;
-                        if (string.IsNullOrEmpty(name) || pval <= 0) continue;
+                    var name = line["name"]?.ToString();
+                    var baseType = line["baseType"]?.ToString() ?? string.Empty;
+                    var pval = line["primaryValue"]?.Value<double>() ?? 0.0;
+                    if (!IsBounded(name) || (!string.IsNullOrEmpty(baseType) && !IsBounded(baseType)) || !IsValidPrice(pval)) continue;
 
-                        var chaos = PrimaryValueToChaos(pval, primaryCurrency, divChaos, exChaos);
-                        var cacheKey = BuildStashCacheKey(name, baseType);
-                        AddFlatPrice(flat, cacheKey, chaos);
-                        var icon = line["icon"]?.ToString() ?? line["image"]?.ToString();
-                        IndexPathName(pathNames, ExtractIconBasename(icon), name);
-                    }
+                    var chaos = PrimaryValueToChaos(pval, primaryCurrency, divChaos, exChaos);
+                    var cacheKey = BuildStashCacheKey(name!, baseType);
+                    AddFlatPrice(flat, cacheKey, chaos);
+                    var icon = line["icon"]?.ToString() ?? line["image"]?.ToString();
+                    IndexPathName(pathNames, ExtractIconBasename(icon), name);
                 }
-            }
-            catch { }
-
             return exChaos;
         }
 
@@ -1002,13 +1199,12 @@ namespace LootValue
 
             try
             {
-                var snapshot = JsonConvert.DeserializeObject<PriceCacheSnapshot>(File.ReadAllText(cacheFilePath));
+                var snapshot = JsonConvert.DeserializeObject<PriceCacheSnapshot>(ReadBoundedCacheFile(cacheFilePath));
 
                 // Written by a different (older) plugin version, or missing required data: discard it
                 // entirely so we never trust a stale-schema cache. A fresh fetch rebuilds it.
                 if (snapshot == null || snapshot.CacheVersion != CacheSchemaVersion || snapshot.FlatPricesChaos == null)
                 {
-                    DeleteCacheFromDisk();
                     return false;
                 }
 
@@ -1016,6 +1212,7 @@ namespace LootValue
                 // (the next fetch overwrites it) and just fall through to refetch.
                 if (snapshot.PriceSource != configuredSource) return false;
                 if (!string.Equals(snapshot.League, configuredLeague, StringComparison.OrdinalIgnoreCase)) return false;
+                ValidateCacheSnapshot(snapshot);
 
                 lock (Gate)
                 {
@@ -1038,51 +1235,140 @@ namespace LootValue
             }
             catch
             {
-                // Corrupt / unreadable / incompatible cache from an older version: remove it so it can't
-                // keep failing, and fall back to a fresh fetch.
-                DeleteCacheFromDisk();
                 return false;
             }
         }
 
-        private static void DeleteCacheFromDisk()
+        private static string ReadBoundedCacheFile(string path)
         {
-            try
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length > MaxCacheBytes) throw new InvalidDataException("Cache exceeds size limit.");
+            using var buffer = new MemoryStream(Math.Min(MaxCacheBytes, 81920));
+            var chunk = new byte[81920];
+            while (true)
             {
-                if (!string.IsNullOrEmpty(cacheFilePath) && File.Exists(cacheFilePath))
-                {
-                    File.Delete(cacheFilePath);
-                }
+                var read = stream.Read(chunk, 0, chunk.Length);
+                if (read == 0) break;
+                if (buffer.Length + read > MaxCacheBytes) throw new InvalidDataException("Cache exceeds size limit.");
+                buffer.Write(chunk, 0, read);
             }
-            catch { }
+            return System.Text.Encoding.UTF8.GetString(buffer.GetBuffer(), 0, checked((int)buffer.Length));
         }
 
-        private static void SaveCacheToDisk()
+        private static bool SaveCacheToDisk(FetchSettings settings, long generation, CancellationToken token,
+            Dictionary<string, double> flat, Dictionary<string, List<UniquePriceListing>> uniques,
+            Dictionary<string, string> paths, double div, double ex, DateTime fetchedAt)
         {
-            if (string.IsNullOrEmpty(cacheFilePath)) return;
+            if (string.IsNullOrEmpty(settings.CachePath)) return false;
 
+            var snapshot = new PriceCacheSnapshot
+            {
+                CacheVersion = CacheSchemaVersion, PriceSource = settings.Source, League = settings.League,
+                LastFetchUtc = fetchedAt, ChaosPerDivine = div, ChaosPerExalted = ex,
+                FlatPricesChaos = new(flat, StringComparer.OrdinalIgnoreCase),
+                UniqueListings = new(uniques, StringComparer.OrdinalIgnoreCase),
+                PathBasenameToItemName = new(paths, StringComparer.OrdinalIgnoreCase),
+            };
+
+            token.ThrowIfCancellationRequested();
+            lock (Gate) if (!enabled || generation != activationGeneration) return false;
+            var json = JsonConvert.SerializeObject(snapshot, Formatting.Indented);
+            if (System.Text.Encoding.UTF8.GetByteCount(json) > MaxCacheBytes) throw new InvalidDataException("Cache exceeds size limit.");
+            Directory.CreateDirectory(Path.GetDirectoryName(settings.CachePath) ?? settings.PluginDirectory);
+            var temp = settings.CachePath + ".tmp-" + Guid.NewGuid().ToString("N");
             try
             {
-                PriceCacheSnapshot snapshot;
-                lock (Gate)
-                {
-                    snapshot = new PriceCacheSnapshot
-                    {
-                        CacheVersion = CacheSchemaVersion,
-                        PriceSource = configuredSource,
-                        League = configuredLeague,
-                        LastFetchUtc = lastFetchTime,
-                        ChaosPerDivine = chaosPerDivine,
-                        ChaosPerExalted = chaosPerExalted,
-                        FlatPricesChaos = new Dictionary<string, double>(flatPricesChaos, StringComparer.OrdinalIgnoreCase),
-                        UniqueListings = new Dictionary<string, List<UniquePriceListing>>(uniqueListingsByName, StringComparer.OrdinalIgnoreCase),
-                        PathBasenameToItemName = new Dictionary<string, string>(pathBasenameToItemName, StringComparer.OrdinalIgnoreCase),
-                    };
-                }
-
-                File.WriteAllText(cacheFilePath, JsonConvert.SerializeObject(snapshot, Formatting.Indented));
+                File.WriteAllText(temp, json);
+                token.ThrowIfCancellationRequested();
+                lock (Gate) if (!enabled || generation != activationGeneration) return false;
+                File.Move(temp, settings.CachePath, true);
+                return true;
             }
-            catch { }
+            finally { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
+        }
+
+        private static async Task<string> GetJsonAsync(string url, CancellationToken token)
+            => await BoundedHttp.GetStringAsync(Http, url, MaxResponseBytes, token).ConfigureAwait(false);
+
+        private static bool IsValidPrice(double value) => value > 0 && double.IsFinite(value);
+        private static bool IsBounded(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= MaxStringLength;
+        private static string BoundString(string value) => value.Length <= MaxStringLength ? value : value[..MaxStringLength];
+
+        private static void ValidateFetched(Dictionary<string, double> flat, Dictionary<string, List<UniquePriceListing>> uniques, Dictionary<string, string> paths, double div, double ex)
+        {
+            if (flat.Count == 0 && uniques.Count == 0) throw new InvalidDataException("Source returned no price data.");
+            if (flat.Count > MaxKeys || uniques.Count > MaxKeys || paths.Count > MaxKeys) throw new InvalidDataException("Excessive collection.");
+            if (!IsValidPrice(div) || !IsValidPrice(ex) || flat.Any(x => !IsBounded(x.Key) || !IsValidPrice(x.Value)))
+                throw new InvalidDataException("Invalid price data.");
+        }
+
+        private static void ValidateCacheSnapshot(PriceCacheSnapshot snapshot)
+        {
+            if (!IsBounded(snapshot.League) || snapshot.FlatPricesChaos.Count > MaxKeys ||
+                (snapshot.UniqueListings?.Count ?? 0) > MaxKeys || (snapshot.PathBasenameToItemName?.Count ?? 0) > MaxKeys ||
+                !IsValidPrice(snapshot.ChaosPerDivine) || !IsValidPrice(snapshot.ChaosPerExalted) ||
+                snapshot.FlatPricesChaos.Any(x => !IsBounded(x.Key) || !IsValidPrice(x.Value)))
+                throw new InvalidDataException("Invalid cache.");
+            var listingCount = snapshot.UniqueListings?.Values.Sum(x => x?.Count ?? 0) ?? 0;
+            if (listingCount > MaxItems) throw new InvalidDataException("Excessive cache listings.");
+            if (snapshot.PathBasenameToItemName?.Any(x => !IsBounded(x.Key) || !IsBounded(x.Value)) == true ||
+                snapshot.UniqueListings?.Any(x => !IsBounded(x.Key) || x.Value == null || x.Value.Any(v =>
+                    v == null || !IsBounded(v.Name) || (!string.IsNullOrEmpty(v.Text) && !IsBounded(v.Text)) ||
+                    (!string.IsNullOrEmpty(v.BaseType) && !IsBounded(v.BaseType)) || !IsValidPrice(v.PriceChaos) ||
+                    v.ExplicitMods == null || v.ExplicitMods.Count > 100 || v.ExplicitMods.Any(m => !IsBounded(m)))) == true)
+                throw new InvalidDataException("Invalid cache strings or listings.");
+        }
+
+        internal static IReadOnlyList<string> ParseScoutModifiersForTests(JToken? token)
+            => ParseScoutModifiers(token);
+
+        internal static TimeSpan CalculateRetryDelayForTests(int consecutiveFailures, int source, string league, int refreshMinutes)
+            => CalculateRetryDelay(consecutiveFailures, source, league, refreshMinutes);
+
+        internal static async Task<string> ReadBoundedJsonForTests(HttpMessageHandler handler, CancellationToken token)
+        {
+            using var client = new HttpClient(handler);
+            return await BoundedHttp.GetStringAsync(client, "https://test.invalid/", MaxResponseBytes, token);
+        }
+
+        internal static void ResetForTests(HttpMessageHandler handler)
+        {
+            Shutdown();
+            lock (Gate)
+            {
+                Http.Dispose(); Http = new HttpClient(handler);
+                flatPricesChaos = new(StringComparer.OrdinalIgnoreCase); uniqueListingsByName = new(StringComparer.OrdinalIgnoreCase); pathBasenameToItemName = new(StringComparer.OrdinalIgnoreCase);
+                lastFetchTime = DateTime.MinValue; ResetFailureHealthLocked();
+                LoadedItemCount = 0; chaosPerDivine = 12; chaosPerExalted = .1;
+                enabled = true; pendingRefresh = false; isFetching = false; activeTask = null; activationGeneration++;
+                pluginDir = string.Empty; cacheFilePath = string.Empty;
+            }
+        }
+
+        internal static Task<bool> RunFetchForTests(string directory)
+        {
+            lock (Gate)
+            {
+                pluginDir = directory; cacheFilePath = Path.Combine(directory, "price_cache.json");
+                if (isFetching) { pendingRefresh = true; return activeTask!; }
+                StartFetchLocked(); return activeTask!;
+            }
+        }
+
+        internal static bool TryLoadCacheForTests(string path)
+        {
+            lock (Gate) cacheFilePath = path;
+            return TryLoadCacheFromDisk();
+        }
+
+        internal static async Task WaitForIdleForTests()
+        {
+            while (true)
+            {
+                Task? task;
+                lock (Gate) { if (!isFetching) return; task = activeTask; }
+                if (task != null) await task.ConfigureAwait(false);
+            }
         }
     }
 }
