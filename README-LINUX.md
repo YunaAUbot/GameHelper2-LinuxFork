@@ -31,8 +31,10 @@ The Linux package intentionally contains only passive bundled plugins:
 - PlayerBuffBar
 - PreloadAlert
 - Radar
+- LootValue
+- NinjaPricer
 
-It excludes AutoHotKeyTrigger and PickupHelper because they synthesize input, LootValue because it contacts a third-party HTTP service, and the Windows updater/launcher. The shell launcher starts `GameHelper.exe` directly.
+AutoHotKeyTrigger and PickupHelper remain excluded because they synthesize input. The Windows updater/launcher is also excluded; the shell launcher starts `GameHelper.exe` directly. LootValue is passive and consumes the shared `PriceProviderRegistry`; bundled NinjaPricer owns its bounded public price/league HTTP GETs, cache, and refresh lifecycle.
 
 ## Start
 
