@@ -100,6 +100,28 @@ else
   fi
 fi
 
+# Shared feature integration files need review even for a clean upstream merge.
+# In particular a clean deletion/revert must not silently remove the Git UI,
+# launcher bridge, or input/lifetime fixes. Keep normal upstream changes flowing
+# elsewhere; never resolve these files with an automatic upstream snapshot.
+feature_paths=(
+  GameHelper/Plugin/GitPluginInstaller.cs GameHelper/Plugin/PManager.cs
+  GameHelper/Settings/SettingsWindow.cs GameHelper/Localization/en-US.json
+  scripts/git-plugin-worker.py scripts/plugin-assembly-check
+  run-gamehelper2-linux.sh build-linux-package.sh README-LINUX.md
+  renderer-src/gamehelper2-gpu-overlay.c
+  renderer-src/ClickableTransparentOverlay/ClickableTransparentOverlay/NativeGpuProbe.cs
+  tests/test_git_plugin_pipeline.py tests/test_git_plugin_blockers.py
+  tests/GitPluginReloadProbe tests/NativeTextInputProbe tests/NativeWaylandTextInputProbe
+  tests/test_linux_gpu_text_input.sh tests/test_linux_wayland_text_input.sh
+  tests/test_linux_gpu_protocol.sh tests/test_linux_gpu_renderer.sh
+  .github/scripts/sync-upstream.sh tests/test_daily_upstream_sync.sh
+)
+if ! git diff --quiet "origin/$target_branch" HEAD -- "${feature_paths[@]}"; then
+  echo '::error::Upstream changes protected Linux/Git feature paths; review required, no files were pushed.'
+  exit 1
+fi
+
 # Update code and the durable upstream snapshot together. The metadata branch
 # deliberately tracks upstream exactly, including a future history rewrite.
 git push --atomic origin \

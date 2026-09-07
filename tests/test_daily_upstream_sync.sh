@@ -46,6 +46,9 @@ git -C "$upstream_work" config user.email test@example.invalid
 printf 'base\n' > "$upstream_work/shared.txt"
 mkdir -p "$upstream_work/Plugins/LootValue"
 printf 'upstream-owned base\n' > "$upstream_work/Plugins/LootValue/owned.txt"
+mkdir -p "$upstream_work/scripts"
+printf 'feature fixture\n' > "$upstream_work/scripts/git-plugin-worker.py"
+git -C "$upstream_work" add scripts/git-plugin-worker.py
 git -C "$upstream_work" add shared.txt
 git -C "$upstream_work" add Plugins/LootValue/owned.txt
 git -C "$upstream_work" commit -qm base
@@ -164,6 +167,8 @@ git -C "$upstream_work" checkout -q --orphan rewritten-main
 git -C "$upstream_work" rm -q -rf .
 printf 'base\n' > "$upstream_work/shared.txt"
 printf 'upstream change\n' > "$upstream_work/upstream.txt"
+mkdir -p "$upstream_work/scripts"
+printf 'feature fixture\n' > "$upstream_work/scripts/git-plugin-worker.py"
 printf 'rewritten history\n' > "$upstream_work/rewrite.txt"
 git -C "$upstream_work" add .
 git -C "$upstream_work" commit -qm 'rewritten upstream'
@@ -182,5 +187,22 @@ git --git-dir="$origin_bare" show refs/heads/main:shared.txt | grep -qx 'fork co
 rewritten_head=$(git --git-dir="$upstream_bare" rev-parse refs/heads/main)
 rewritten_base=$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base)
 [[ "$rewritten_base" == "$rewritten_head" ]] || { echo 'FAIL: rewritten upstream base not advanced' >&2; exit 1; }
+
+# A clean upstream deletion of a feature path must also fail closed.
+git -C "$upstream_work" rm -q scripts/git-plugin-worker.py
+git -C "$upstream_work" commit -qm 'remove protected feature'
+git -C "$upstream_work" push -q origin HEAD:main
+before=$(git --git-dir="$origin_bare" rev-parse refs/heads/main)
+base_before=$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base)
+if (
+  cd "$runner"
+  UPSTREAM_URL="$upstream_bare" TARGET_BRANCH=main SYNC_BASE_BRANCH=upstream-sync-base "$sync_script"
+); then
+  echo 'FAIL: clean feature deletion unexpectedly succeeded' >&2
+  exit 1
+fi
+[[ "$before" == "$(git --git-dir="$origin_bare" rev-parse refs/heads/main)" ]]
+[[ "$base_before" == "$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base)" ]]
+git --git-dir="$origin_bare" show refs/heads/main:scripts/git-plugin-worker.py | grep -qx 'feature fixture'
 
 printf 'PASS: daily upstream sync workflow is scheduled, bounded, and fail-closed\n'

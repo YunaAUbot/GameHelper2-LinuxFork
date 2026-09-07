@@ -138,5 +138,18 @@
   "game_process.done": "Done",
   "game_process.retry_or_delay": "Retry or Delay Selection",
   "overlay_killer.title": "Player Vs Player (PVP) Detected",
-  "overlay_killer.message": "Please don't cheat in PvP mode. GameHelper was not created for PvP cheating. Overlay will close in {0} seconds."
+  "overlay_killer.message": "Please don't cheat in PvP mode. GameHelper was not created for PvP cheating. Overlay will close in {0} seconds.",
+  "settings.plugin.git.read_error": "Unable to read installer status.",
+  "settings.plugin.git.launcher_required": "Start through the Linux launcher with Python 3, Git and the .NET 10 SDK installed.",
+  "settings.plugin.git.pending": "An installer request is already pending.",
+  "settings.plugin.git.queued": "Request queued; compilation may take several minutes.",
+  "settings.plugin.git.write_error": "Unable to queue installer request.",
+  "settings.plugin.git.title": "Install from Git repository",
+  "settings.plugin.git.url": "Repository HTTPS URL",
+  "settings.plugin.git.trust": "I trust this source: building and loading plugins executes code with my user permissions.",
+  "settings.plugin.git.install": "Download, build and install",
+  "settings.plugin.git.restart": "New installs: use Reload all plugins; no restart required. Updates activate on next launch. Failures retain existing plugins and configuration.",
+  "settings.plugin.git.update": "Check for updates at startup",
+  "settings.plugin.git.invalid_url": "Use a credential-free HTTPS repository URL with no query or fragment.",
+  "settings.plugin.git.versions": "Installed: {0}  Latest build: {1}"
 }

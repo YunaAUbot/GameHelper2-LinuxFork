@@ -41,6 +41,7 @@ namespace GameHelper.Plugin
         /// </summary>
         internal static void InitializePlugins()
         {
+            GitPluginInstaller.Initialize();
             State.PluginsDirectory.Create(); // doesn't do anything if already exists.
             LoadPluginMetadata(LoadPlugins());
 #if DEBUG

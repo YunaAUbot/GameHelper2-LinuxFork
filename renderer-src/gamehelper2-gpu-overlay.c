@@ -117,12 +117,56 @@ static int send_texture_ack(int fd, uint32_t operation, int success, uint64_t id
     uint32_t msg[6] = { 20, TEXTURE_ACK_MAGIC, operation, success ? 1u : 0u, (uint32_t)id, (uint32_t)(id >> 32) };
     return write_exact(fd, msg, sizeof msg);
 }
-struct keyboard_capture { int requested; int active; double retry_at; unsigned char down[256]; };
+struct keyboard_capture { Window focus_window; Atom protocols; Atom delete_window; Time user_time; int requested; int active; int suspended; double retry_at; unsigned char down[256]; };
+
+/* XGrabKeyboard alone only redirects events already delivered to Xwayland.
+ * If a Wayland app (e.g. the browser used to copy a URL) has desktop focus,
+ * GrabSuccess does not make ordinary text reach our non-focusable compositor.
+ * A transparent, pointer-transparent managed window gives the text editor
+ * normal application focus, without changing the visible overlay's stacking.
+ * Map it only for WantTextInput and let the WM restore focus when it unmaps. */
+static void focus_text_input(Display *d, Window compositor, struct keyboard_capture *state) {
+    if(!state->focus_window) {
+        XWindowAttributes attrs;
+        XGetWindowAttributes(d,compositor,&attrs);
+        XSetWindowAttributes wa={0};
+        wa.colormap=attrs.colormap;
+        wa.border_pixel=wa.background_pixel=0; /* ARGB, including zero alpha. */
+        Window w=XCreateWindow(d,DefaultRootWindow(d),0,0,1,1,0,attrs.depth,InputOutput,attrs.visual,
+                              CWColormap|CWBorderPixel|CWBackPixel,&wa);
+        state->focus_window=w;
+        XSelectInput(d,w,FocusChangeMask);
+        XStoreName(d,w,"GameHelper2 text input");
+        state->protocols=XInternAtom(d,"WM_PROTOCOLS",False);
+        state->delete_window=XInternAtom(d,"WM_DELETE_WINDOW",False);
+        XSetWMProtocols(d,w,&state->delete_window,1);
+        XClassHint class_hint={"gamehelper2-text-input","GameHelper2"};
+        XSetClassHint(d,w,&class_hint);
+        unsigned long motif[5]={2,0,0,0,0}; /* Undecorated. */
+        Atom motif_atom=XInternAtom(d,"_MOTIF_WM_HINTS",False);
+        XChangeProperty(d,w,motif_atom,motif_atom,32,PropModeReplace,(unsigned char*)motif,5);
+        Atom skip[2]={XInternAtom(d,"_NET_WM_STATE_SKIP_TASKBAR",False),XInternAtom(d,"_NET_WM_STATE_SKIP_PAGER",False)};
+        XChangeProperty(d,w,XInternAtom(d,"_NET_WM_STATE",False),XA_ATOM,32,PropModeReplace,(unsigned char*)skip,2);
+        XShapeCombineRectangles(d,w,ShapeInput,0,0,NULL,0,ShapeSet,Unsorted);
+    }
+    XChangeProperty(d,state->focus_window,XInternAtom(d,"_NET_WM_USER_TIME",False),XA_CARDINAL,32,
+                    PropModeReplace,(unsigned char*)&state->user_time,1);
+    XMapRaised(d,state->focus_window);
+    XEvent event={0};
+    event.xclient.type=ClientMessage;
+    event.xclient.window=state->focus_window;
+    event.xclient.message_type=XInternAtom(d,"_NET_ACTIVE_WINDOW",False);
+    event.xclient.format=32;
+    event.xclient.data.l[0]=1; /* Application request, not a pager/WM override. */
+    event.xclient.data.l[1]=(long)state->user_time;
+    XSendEvent(d,DefaultRootWindow(d),False,SubstructureRedirectMask|SubstructureNotifyMask,&event);
+}
 static void release_keyboard(Display *d, int fd, struct keyboard_capture *state) {
     if(state->active) {
         for(size_t i=0;i<sizeof state->down;i++) if(state->down[i])
             send_key(fd,XkbKeycodeToKeysym(d,(KeyCode)i,0,0),0,0);
         XUngrabKeyboard(d,CurrentTime);
+        if(state->focus_window) XUnmapWindow(d,state->focus_window);
         trace_input("keyboard",0,0);
     }
     memset(state->down,0,sizeof state->down);
@@ -131,10 +175,10 @@ static void release_keyboard(Display *d, int fd, struct keyboard_capture *state)
 }
 static void request_keyboard(Display *d, Window w, int fd, struct keyboard_capture *state, int capture) {
     state->requested=capture;
-    if(!capture) { state->retry_at=0; release_keyboard(d,fd,state); return; }
-    if(!state->active && now_seconds()>=state->retry_at) {
+    if(!capture) { state->suspended=0; state->retry_at=0; release_keyboard(d,fd,state); return; }
+    if(!state->suspended && !state->active && now_seconds()>=state->retry_at) {
         int result=XGrabKeyboard(d,w,False,GrabModeAsync,GrabModeAsync,CurrentTime);
-        if(result==GrabSuccess) state->active=1;
+        if(result==GrabSuccess) { state->active=1; focus_text_input(d,w,state); }
         else state->retry_at=now_seconds()+KEYBOARD_RETRY_SECONDS;
         trace_input("keyboard",capture,result);
         XFlush(d);
@@ -143,6 +187,7 @@ static void request_keyboard(Display *d, Window w, int fd, struct keyboard_captu
 static void close_client(Display *d, int *fd, struct keyboard_capture *keyboard) {
     release_keyboard(d,*fd,keyboard);
     keyboard->requested=0;
+    keyboard->suspended=0;
     keyboard->retry_at=0;
     if(*fd>=0) close(*fd);
     *fd=-1;
@@ -337,6 +382,28 @@ int main(int argc,char **argv) {
         send_pointer_position(d,w,client);
         while(XPending(d)) {
             XEvent e; XNextEvent(d,&e);
+            if(e.type==ButtonPress&&e.xbutton.window==w) { keyboard.user_time=e.xbutton.time; keyboard.suspended=0; }
+            else if(e.type==KeyPress) keyboard.user_time=e.xkey.time;
+            if(e.type==FocusOut&&e.xfocus.window==keyboard.focus_window&&keyboard.active) {
+                Window focused; int revert;
+                XGetInputFocus(d,&focused,&revert);
+                if(focused!=keyboard.focus_window) {
+                    /* A user app switch must release capture even if ImGui
+                     * still has an active field. Do not reclaim focus on the
+                     * next retry: wait for a new overlay click or text session.
+                     * NotifyWhileGrabbed is a real focus loss here too. */
+                    release_keyboard(d,client,&keyboard);
+                    keyboard.suspended=1;
+                }
+            }
+            if(e.type==ClientMessage&&e.xclient.window==keyboard.focus_window&&
+               e.xclient.message_type==keyboard.protocols&&e.xclient.format==32&&
+               (Atom)e.xclient.data.l[0]==keyboard.delete_window) {
+                /* Closing the focus window must not let the WM kill the
+                 * entire compositor connection (the default for Alt+F4). */
+                release_keyboard(d,client,&keyboard);
+                keyboard.suspended=1;
+            }
             if(client>=0&&e.type==MotionNotify) send_mouse(client,-1,0,e.xmotion.x,e.xmotion.y);
             else if(client>=0&&(e.type==KeyPress||e.type==KeyRelease)) {
                 char text[16]; KeySym key=NoSymbol; int down=e.type==KeyPress;
@@ -392,5 +459,6 @@ int main(int argc,char **argv) {
     }
     close_texture_client(d,&client,&keyboard,&texture_upload);delete_all_textures(&textures);
     if(f12_keycode!=0) XUngrabKey(d,f12_keycode,AnyModifier,RootWindow(d,screen));
+    if(keyboard.focus_window) XDestroyWindow(d,keyboard.focus_window);
     close(listener);glDeleteTextures(1,&font);glXMakeCurrent(d,None,NULL);glXDestroyContext(d,ctx);XDestroyWindow(d,w);XFree(vi);XFree(cfgs);XCloseDisplay(d);return 0;
 }

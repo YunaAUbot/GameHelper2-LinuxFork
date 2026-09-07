@@ -8,7 +8,7 @@ configuration=Release
 framework=net10.0-windows
 runtime=win-x64
 build_output="$repo_root/GameHelper/bin/$configuration/$framework/$runtime"
-passive_plugins=(PreloadAlert Radar HealthBars Atlas2 PlayerBuffBar)
+passive_plugins=(PreloadAlert Radar HealthBars Atlas2 PlayerBuffBar LootValue NinjaPricer)
 
 [[ $# -le 1 ]] || { printf 'usage: %s [output-directory]\n' "$0" >&2; exit 2; }
 [[ "$output" = /* ]] || output="$PWD/$output"
@@ -38,6 +38,7 @@ trap cleanup EXIT
 
 "$dotnet" build "$repo_root/GameOverlay.Linux.sln" \
   -c "$configuration" -p:GenerateDocumentationFile=false \
+  -p:EnableWindowsTargeting=true \
   -p:SkipNativeGpuOverlayBuild=true
 "$dotnet" publish "$repo_root/GameHelper/GameHelper.csproj" \
   -c "$configuration" -f "$framework" -r "$runtime" \
@@ -51,7 +52,11 @@ cc -Wall -Wextra -Werror -Wno-unused-result -O2 \
   "${native_cflags[@]}" "${native_libs[@]}" -lm -o "$native_helper"
 install -m 0755 "$native_helper" "$publish/gamehelper2-gpu-overlay"
 
-mkdir -p "$publish/Plugins" "$publish/licenses"
+mkdir -p "$publish/Plugins" "$publish/licenses" "$publish/scripts"
+mkdir -p "$publish/scripts/plugin-assembly-check"
+cp "$repo_root/scripts/plugin-assembly-check/PluginAssemblyCheck.csproj" "$repo_root/scripts/plugin-assembly-check/Program.cs" "$publish/scripts/plugin-assembly-check/"
+cp "$repo_root/run-gamehelper2-linux.sh" "$publish/"
+cp "$repo_root/scripts/steam-proton-env.sh" "$repo_root/scripts/git-plugin-worker.py" "$publish/scripts/"
 cp "$repo_root/README-LINUX.md" "$publish/README-LINUX.md"
 for plugin in "${passive_plugins[@]}"; do
   source_dir="$build_output/Plugins/$plugin"
@@ -62,6 +67,8 @@ for plugin in "${passive_plugins[@]}"; do
   mkdir -p "$publish/Plugins/$plugin"
   cp -a "$source_dir/." "$publish/Plugins/$plugin/"
   rm -rf -- "$publish/Plugins/$plugin/config" "$publish/Plugins/$plugin/configs"
+  rm -f -- "$publish/Plugins/$plugin/price_cache.json" \
+    "$publish/Plugins/$plugin"/price_cache.json.tmp-*
 done
 
 cp "$repo_root/renderer-src/ClickableTransparentOverlay/LICENSE" \
@@ -74,14 +81,14 @@ fi
 
 # Reject runtime state or excluded plugin content even if an upstream build
 # target starts producing it in the future.
-for forbidden in configs logs credentials AutoHotKeyTrigger PickupHelper LootValue; do
+for forbidden in configs logs credentials AutoHotKeyTrigger PickupHelper; do
   if find "$publish" \( -type d -o -type f \) -iname "$forbidden" -print -quit | grep -q .; then
     printf 'refusing to package forbidden path: %s\n' "$forbidden" >&2
     exit 1
   fi
 done
-if find "$publish" -type f \( -iname '*.log' -o -iname '.env' -o -iname 'credentials*' -o -iname 'secrets*' \) -print -quit | grep -q .; then
-  printf 'refusing to package runtime log or credential material\n' >&2
+if find "$publish" -type f \( -iname '*.log' -o -iname '.env' -o -iname 'credentials*' -o -iname 'secrets*' -o -iname 'price_cache.json' -o -iname 'price_cache.json.tmp-*' \) -print -quit | grep -q .; then
+  printf 'refusing to package runtime log, cache, or credential material\n' >&2
   exit 1
 fi
 
