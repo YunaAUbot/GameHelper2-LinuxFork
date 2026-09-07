@@ -41,6 +41,8 @@ grep -Eq '^passive_plugins=.*LootValue.*NinjaPricer' "$BUILDER" || fail "builder
 ! grep -Eq '^for forbidden.*LootValue' "$BUILDER" || fail "builder still rejects bundled LootValue"
 grep -q 'price_cache.json' "$BUILDER" || fail "builder does not remove and reject NinjaPricer runtime cache"
 grep -q 'price_cache.json.tmp-' "$BUILDER" || fail "builder does not remove and reject NinjaPricer temporary cache files"
+grep -Fq 'dotnet=${DOTNET:-dotnet}' "$BUILDER" || fail "builder does not use the caller's portable dotnet command"
+! grep -q '/root/.dotnet' "$BUILDER" || fail "builder contains a host-specific dotnet path"
 grep -q 'publish.*GameHelper' "$BUILDER" || fail "builder does not publish GameHelper"
 grep -q -- '--self-contained true' "$BUILDER" || fail "publish is not self-contained"
 grep -q 'GenerateDocumentationFile=false' "$BUILDER" || fail "known publish XML documentation failure is not disabled"

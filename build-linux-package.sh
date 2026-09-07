@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 output="${1:-$repo_root/dist/GameHelper2-linux}"
-dotnet=/root/.dotnet/dotnet
+dotnet=${DOTNET:-dotnet}
 configuration=Release
 framework=net10.0-windows
 runtime=win-x64
