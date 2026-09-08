@@ -83,92 +83,94 @@ No public GameHelper2 derivative release should be made until its repository-wid
 Start using `run-gamehelper2-linux.sh`, open Settings → Plugins → **Install from Git
 repository**, enter a credential-free HTTPS repository URL, and accept that both
 building and loading the source execute unrestricted code with your user permissions.
-This is not a sandbox. Trust also covers future versions when startup updates are on.
-Each source has a persistent **Check for updates at startup** checkbox, on by default.
-The UI shows the installed and latest built Git commits and installation/update errors.
+This is not a sandbox. Each manual build requires source trust acceptance.
 
-Prerequisites on Linux: Python 3, Git, and the native **.NET 10 SDK**, plus network
-access to the repository and its NuGet feeds. Put `dotnet` on PATH or launch with
-`DOTNET=/absolute/path/to/dotnet ./run-gamehelper2-linux.sh`. The Windows SDK or Git
-inside Proton is not used. Direct Windows launches do not provide this installer;
-use the Linux launcher for this feature. Private repositories requiring credentials
-are currently unsupported; never paste a token into the URL.
+The actual `Plugins/<Name>/` folders are the entire inventory. Removing a folder
+removes its entry on the next background scan. No central registration is needed.
+A folder with no own Git checkout is **Local**, including old bundled or manually
+installed plugins. Old owner markers and registry URLs never supply a remote.
+`sources.json`, legacy pending builds, backups and credential mappings are left
+untouched but are not read as inventory or reinstall instructions.
 
-New plugins are built and validated in staging, then atomically published into the
-active `Plugins/<Name>/` directory only if it is absent. Select **Reload all plugins**
-to discover and load them; no restart is required. Previously pending first installs
-are also published by the worker when no installation or recovery history exists,
-even with automatic updates disabled.
+Use a credential-free HTTPS or Git SSH URL to Add a repository. If its plugin folder
+is absent, Add performs a fresh clone, build, validation and atomic installation.
+Old staging and installation history do not prevent a fresh explicit Add. Existing
+Local folders are never adopted implicitly. Existing Git folders offer Update;
+Update all selects only Git-linked folders that currently exist (at most 32 per batch).
+Startup preferences control metadata checks only; builds require a manual request.
 
-The launcher activates staged updates before starting GameHelper, then runs the
-native worker beside Proton. Downloads and compilation never run on the render
-thread or delay startup. Updates downloaded during a session activate at the next
-launcher start, even if “Reload all plugins” has queued the old assembly for unloading. Reload never
-applies staged updates or replaces loaded DLLs.
-Startup activation has a 20-second deadline and refuses to launch if recovery cannot
-complete. Each Git/build subprocess has a 180-second timeout; worker shutdown kills
-its current subprocess group. Sources are limited to 32, and each checked tree to
-30,000 files / 1 GiB; these are operational limits, not isolation from trusted code.
+New installations contain a pristine checkout at `.git-source/`, with its real
+`.git` directory, remote, branch and commit history. Builds run from a disposable
+copy whose project references and copy targets can be adapted to the installed host.
+The retained source checkout is not modified by that adaptation. Existing folder-root
+`.git` directories and `.git` worktree files are also inspected; parent repositories
+are never inherited. The worker uses the checkout's upstream remote/branch, falling
+back to origin/remote HEAD where no upstream is configured.
 
-Supported repositories contain exactly one non-test `.csproj` (at root or nested).
-Ambiguous projects, symlinks, unsafe names, and existing unmanaged plugin directories
-are rejected. The public CampaignHelper and NinjaPricer project layouts use a host project reference; in the temporary checkout
-this is replaced with managed host and third-party references from the installed
-`GameHelper.deps.json`. Framework runtime packs and native DLLs are excluded;
-the SDK supplies framework reference assemblies. NuGet runtime dependencies are
-copied into the staged output, with host-provided DLLs removed. Their host validation
-and copy-to-host targets are removed, and normal output assets are staged. The build
-must contain exactly one sealed class directly deriving from `PCore<TSettings>`;
-metadata is checked without executing the assembly. This cannot guarantee runtime
-compatibility or successful plugin initialization; verify in the real GUI.
+`.git-build-manifest.json` records the built commit and hashes of installed artifacts.
+The UI separates **Installed binary**, **Source HEAD**, and **Pending build**. Fetching
+or advancing source HEAD cannot change the installed binary revision. Revision status
+compares the verified installed commit with the fetched upstream using real ancestry:
+Up to date, Behind, Ahead, Diverged, or Unknown. Missing or changed build proof is
+Unknown even if source HEAD is current. Source ancestry is tracked separately. Offline
+checks show Unknown and retain only historical check timestamps. Rendering reads a
+background folder snapshot; Git and network work run in the native worker.
 
-`https://github.com/YunaAUbot/campaignhelper2` is a supported public source URL.
-Adding `https://github.com/YunaAUbot/GameHelper2-NinjaPricer` to a package containing
-bundled NinjaPricer reports a conflict and never adopts or modifies that directory.
-Private sources need a separate future credential workflow; this installer does not
-store or request credentials.
+Updates leave active DLLs untouched until the next launcher start. A pending reference
+inside `.git-plugin.json` binds the staged build to that folder instance and its original
+artifact hashes. Deleting/replacing the folder cancels its authority to activate: orphaned
+staging or backups never resurrect it. Activation checks provenance, keeps user config,
+and atomically swaps complete directories with Linux `renameat2(RENAME_EXCHANGE)`.
+There is no interval with a missing active folder. The previous complete directory is
+retained under `PluginSources/backups/<unique-token>/`; if backup finalization fails,
+it remains under the same token in `pending/`. It is never automatically restored over
+later user data. Legacy backups remain available for manual recovery.
 
-State lives beside the executable in `PluginSources/`: `sources.json` holds accepted
-URLs and update preferences, `pending/<source-id>/` holds complete staged outputs,
-and `previous-<source-id>/` retains the previous activated directory for manual
-recovery while the application is closed. `backup-<source-id>/` is an interrupted
-activation journal and is rolled back on the next launch. Activation or recovery
-errors (including failure to remove the previous copy or rename the backup) refuse
-launch. Startup reconciles the installed version from the active ownership marker
-before allowing discovery, including after an interrupted rollback. Existing `config/` and
-`configs/` contents survive updates, as do root files named `settings`, `config`,
-`preferences`, or `options` with a `.json`, `.ini`, `.cfg`, `.toml`, `.yaml`, `.yml`,
-or `.xml` extension (case-insensitive). Existing configuration overrides shipped
-defaults. Other files follow the new build; obsolete code and assets are not carried
-forward. Plugins should store other user state under `config/` or `configs/`.
-Download, compiler, validation and activation
-failures retain the existing plugin or its recovery backup; activation failures block
-launch until recovery succeeds. Runtime load/initialization failures require
-manual recovery from the retained previous directory; automatic runtime rollback
-is not implemented. Build/Git output is deliberately discarded to avoid recording
-secrets printed by external tools; the UI reports a generic failed-step error.
+User configuration in `config/`, `configs/`, or root `settings`, `config`, `preferences`,
+`options` files with JSON/INI/CFG/TOML/YAML/YML/XML extensions wins over shipped defaults.
+Other assets follow the new build. New installs can be loaded with **Reload all plugins**;
+updates activate only after restart. The worker verifies the plugin assembly metadata
+before publication and removes host-provided DLLs from plugin output.
 
-Local verification: `DOTNET=/path/to/dotnet python3 tests/test_git_plugin_pipeline.py`
-uses a generated local Git repository, the actual SDK compiler, metadata validation,
-version updates, offline and build failures, rollback, config retention, ownership
-conflicts (including a directory appearing at publication), ambiguous projects,
-timeout, and worker shutdown. Injected finalization and registry-write failures check
-startup refusal, rollback/version reconciliation, and configuration preservation on
-subsequent starts. A real launcher/worker subprocess check verifies that failed
-finalization starts neither Proton nor the background worker. Its reload probe compiles the production reload and
-discovery methods with lifecycle stubs and real collectible assembly loads; it keeps
-old contexts alive to verify that reload cannot activate an update. It does not test
-the real render loop, plugin initialization, or Proton. It does not execute
-third-party repository code.
+Authentication uses the launching user's ordinary Git credential helpers, SSH agent and
+SSH configuration. The optional existing GitHub CLI login uses `gh auth git-credential`.
+No credential provisioning, permission changes, repository-specific source constants,
+or private tokens in URLs/logs are involved. Controller token environment variables and
+injected Git configuration are not forwarded. Git/build output is discarded.
+Discovery and revision checks use a disposable Git context with only the checkout's
+objects, refs, and literal remote/branch settings. Checkout-local command settings,
+includes, hooks, helpers, fsmonitor and filters are not used; normal user credentials
+and SSH configuration still apply. Checks leave the source checkout unchanged.
 
-`DOTNET=/path/to/dotnet python3 tests/test_git_plugin_blockers.py -v` additionally
-requires `dist/GameHelper2-linux` and an inspected local public CampaignHelper checkout selected with
-`GH2_CAMPAIGN_SOURCE=/absolute/path/to/checkout` (that case skips if unset). It builds that checkout against a copy of
-the self-contained host, checks framework exclusion and staged seed data, invokes a
-NuGet-dependent fixture, and verifies root configuration retention and obsolete asset
-removal. Set `GH2_BLOCKER_ARTIFACTS` to retain CampaignHelper output and reference proof.
+Release packaging strips `.git-source`, plugin Git state/provenance files and
+`PluginSources` from staged runtime output. Other runtime checkouts are rejected,
+including those without reflogs, so their working-tree source cannot ship accidentally.
+The host source repository's own `.git` is outside this packaging boundary.
 
-Daily upstream sync fails before pushing if a merge changes protected Git installer,
-UI integration, launcher, renderer or regression-test paths, including clean deletions.
-Those shared-file changes require review and local integration; unrelated upstream
-changes and the upstream-owned LootValue snapshot keep their existing sync behavior.
+If an existing read-only deploy key needs routing, its owner must configure ordinary SSH
+Host aliases with the existing IdentityFile/known_hosts and appropriate IdentitiesOnly
+and host verification settings, then use that alias in the Git URL (or an owner-managed
+Git URL rewrite). This is separate from plugin inventory. The worker does not consume
+legacy deploy-key mappings, remove keys, or broaden repository access.
+
+Known limitation: generic Git imports have been confirmed working in live use, but
+our plugin repositories still fail import because their folder structures are not
+supported by the current installer. This publication preserves the deployed behavior;
+repository-layout compatibility remains unresolved.
+
+Linux prerequisites: Python 3, Git and the native .NET 10 SDK. Put `dotnet` on PATH or
+set `DOTNET=/absolute/path/to/dotnet`. Repositories need exactly one non-test `.csproj`;
+ambiguous projects, symlinks and unsafe names are rejected. Builds resolve managed host
+references from `GameHelper.deps.json`, excluding framework packs and native DLLs.
+Trees are limited to 30,000 files / 1 GiB; subprocesses have a 180-second timeout.
+
+Targeted local validation:
+
+```bash
+DOTNET=/path/to/dotnet python3 -m unittest discover -s tests -p 'test_git_plugin_*.py' -v
+```
+
+The folder, status, staging and reload fixtures use temporary local repositories and
+real Git/.NET builds. They do not touch the gaming PC. The existing host migration helper
+now targets host files only; legacy source lists and authentication files are preserved
+byte-for-byte and never applied as plugin registration.

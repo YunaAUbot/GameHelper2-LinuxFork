@@ -94,7 +94,7 @@ namespace GameHelper.Settings
 
         private static void DrawSettingsLayout()
         {
-            var enabledPlugins = PManager.Plugins.Where(container => container.Metadata.Enable).ToList();
+            var enabledPlugins = PManager.Plugins.Where(container => container.Metadata.Enable && GitPluginInstaller.FolderPresent(container.Name)).ToList();
             EnsureSelectedSettingsPage(enabledPlugins);
 
             var availableWidth = ImGui.GetContentRegionAvail().X;
@@ -276,8 +276,8 @@ namespace GameHelper.Settings
 
             GitPluginInstaller.Draw();
 
-            var enabledCount = PManager.Plugins.Count(p => p.Metadata.Enable);
-            ImGui.TextDisabled(L.F("settings.plugin.active_count", "Active: {0} / {1}", enabledCount, PManager.Plugins.Count));
+            var enabledCount = PManager.Plugins.Count(p => p.Metadata.Enable && GitPluginInstaller.FolderPresent(p.Name));
+            ImGui.TextDisabled(L.F("settings.plugin.active_count", "Active: {0} / {1}", enabledCount, PManager.Plugins.Count(p => GitPluginInstaller.FolderPresent(p.Name))));
             ImGui.SameLine();
             if (ImGui.SmallButton(L.Label("settings.plugin.enable_all", "Enable all", "EnableAllPlugins")))
             {
@@ -308,7 +308,7 @@ namespace GameHelper.Settings
 
             if (!ImGui.BeginTable(
                 "pluginTable",
-                4,
+                5,
                 ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersOuter | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.ScrollY,
                 new Vector2(0, 0)))
             {
@@ -318,10 +318,11 @@ namespace GameHelper.Settings
             ImGui.TableSetupColumn(L.T("settings.plugin.column.plugin", "Plugin"), ImGuiTableColumnFlags.WidthStretch, 0.45f);
             ImGui.TableSetupColumn(L.T("settings.plugin.column.description", "Description"), ImGuiTableColumnFlags.WidthStretch, 1.0f);
             ImGui.TableSetupColumn(L.T("settings.plugin.column.status", "Status"), ImGuiTableColumnFlags.WidthFixed, 70f);
+            ImGui.TableSetupColumn(L.T("settings.plugin.column.revision", "Revision"), ImGuiTableColumnFlags.WidthStretch, 1.2f);
             ImGui.TableSetupColumn(L.T("settings.plugin.column.enable", "Enable"), ImGuiTableColumnFlags.WidthFixed, 60f);
             ImGui.TableHeadersRow();
 
-            foreach (var container in PManager.Plugins)
+            foreach (var container in PManager.Plugins.Where(p => GitPluginInstaller.FolderPresent(p.Name)))
             {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
@@ -361,6 +362,12 @@ namespace GameHelper.Settings
 
                 ImGui.TableNextColumn();
                 ImGui.AlignTextToFramePadding();
+                ImGui.TextUnformatted(GitPluginInstaller.RevisionLabel(container.Name));
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(GitPluginInstaller.RevisionDetail(container.Name));
+                GitPluginInstaller.DrawRevisionUpdate(container.Name);
+
+                ImGui.TableNextColumn();
+                ImGui.AlignTextToFramePadding();
                 var enabled = container.Metadata.Enable;
                 if (ImGui.Checkbox($"##enable_{container.Name}", ref enabled))
                 {
@@ -373,7 +380,7 @@ namespace GameHelper.Settings
 
         private static void SetAllPlugins(bool enabled)
         {
-            foreach (var container in PManager.Plugins)
+            foreach (var container in PManager.Plugins.Where(p => GitPluginInstaller.FolderPresent(p.Name)))
             {
                 SetPluginEnabled(container, enabled);
             }

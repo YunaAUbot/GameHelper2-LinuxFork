@@ -25,3 +25,12 @@ POE2Radar
 artifacts/
 **/__pycache__/
 **/PluginSources/
+**/.git-source/
+**/.git-plugin.json
+**/.git-status.json
+**/.git-build-manifest.json
+**/.git-source-owner.json
+**/.git-plugin.tmp
+**/.git-status.tmp
+**/.git-build-manifest.tmp
+**/.git-source-owner.tmp

@@ -71,6 +71,21 @@ for plugin in "${passive_plugins[@]}"; do
     "$publish/Plugins/$plugin"/price_cache.json.tmp-*
 done
 
+# Runtime artifacts must never contain embedded private source or plugin Git
+# state. Strip the owned metadata; reject other checkouts because removing just
+# .git would still ship their private working-tree files. This scans only the
+# staged runtime, not the legitimate host source repository.
+find "$publish" \( -iname '.git-source' -o -iname '.git-plugin.json' \
+  -o -iname '.git-status.json' -o -iname '.git-build-manifest.json' \
+  -o -iname '.git-source-owner.json' -o -iname '.git-plugin.tmp' \
+  -o -iname '.git-status.tmp' -o -iname '.git-build-manifest.tmp' \
+  -o -iname '.git-source-owner.tmp' -o -iname 'PluginSources' \) \
+  -prune -exec rm -rf -- {} +
+if find "$publish" -iname '.git' -print -quit | grep -q .; then
+  printf 'refusing to package a runtime checkout (private source may be present)\n' >&2
+  exit 1
+fi
+
 cp "$repo_root/renderer-src/ClickableTransparentOverlay/LICENSE" \
   "$publish/licenses/ClickableTransparentOverlay.LICENSE"
 if [[ -f "$repo_root/LICENSE" ]]; then
