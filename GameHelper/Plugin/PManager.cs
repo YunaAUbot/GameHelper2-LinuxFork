@@ -446,7 +446,9 @@ namespace GameHelper.Plugin
             Exception? saveException = null;
             try
             {
-                container.Plugin.SaveSettings();
+                // A removed folder must not be recreated by a retained loaded assembly.
+                if (Directory.Exists(Path.Combine(State.PluginsDirectory.FullName, container.Name)))
+                    container.Plugin.SaveSettings();
             }
             catch (Exception ex)
             {
@@ -552,7 +554,7 @@ namespace GameHelper.Plugin
                     // called, so they never loaded their settings file from disk - their
                     // in-memory Settings is still the empty `new TSettings()` default.
                     // Saving that would overwrite (wipe) the user's saved config on disk.
-                    if (!container.Metadata.Enable)
+                    if (!container.Metadata.Enable || !Directory.Exists(Path.Combine(State.PluginsDirectory.FullName, container.Name)))
                     {
                         continue;
                     }

@@ -20,10 +20,10 @@ w = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(w)
 
 class RecordingWorker(w.Worker):
-    def run(self, args, cwd=None, timeout=180):
+    def run(self, args, cwd=None, timeout=180, capture=False):
         if len(args) > 2 and args[1] == 'build':
             self.references = [Path(r.findtext('HintPath')).name for r in ET.parse(args[2]).findall('.//Reference')]
-        super().run(args, cwd, timeout)
+        return super().run(args, cwd, timeout, capture)
 
 class Blockers(unittest.TestCase):
     def setUp(self):
@@ -95,15 +95,22 @@ class Blockers(unittest.TestCase):
         repo = self.fixture()
         (repo / 'settings.json').write_text('default v1')
         (repo / 'Fixture.csproj').write_text((repo / 'Fixture.csproj').read_text().replace('</Project>', '<ItemGroup><None Update="settings.json" CopyToOutputDirectory="Always" /></ItemGroup></Project>'))
+        # Obsolete assets must originate in the v1 build. Injecting extra DLLs
+        # after installation now correctly invalidates artifact provenance.
+        obsolete = ('old.deps.json', 'old.runtimeconfig.json', 'old.py', 'old.dll', 'old.png', 'old.json', 'Data/old.json')
+        for name in obsolete:
+            asset = repo / name; asset.parent.mkdir(exist_ok=True); asset.write_text('obsolete')
+        project = repo / 'Fixture.csproj'
+        project.write_text(project.read_text().replace('</Project>', '<ItemGroup><None Update="old.*;Data/old.json" CopyToOutputDirectory="Always" /></ItemGroup></Project>'))
         self.commit(repo)
         worker = w.Worker(self.app, allow_local=True)
         record = worker.install(str(repo), True); worker.activate()
         target = self.app / 'Plugins/Fixture'
         for name in ('settings.json', 'config.json', 'preferences.ini'):
             (target / name).write_text('custom')
-        for name in ('old.deps.json', 'old.runtimeconfig.json', 'old.py', 'old.dll', 'old.png', 'old.json'):
-            (target / name).write_text('obsolete')
-        (target / 'Data').mkdir(); (target / 'Data/old.json').write_text('obsolete')
+        for name in obsolete:
+            self.assertTrue((target / name).is_file())
+            (repo / name).unlink()
         (target / 'config').mkdir(); (target / 'config/custom.json').write_text('custom')
         (repo / 'settings.json').write_text('default v2'); self.commit(repo)
         worker.install(str(repo), True); worker.activate()
