@@ -77,6 +77,12 @@ public sealed class NinjaPricerCore : PCore<NinjaPricerSettings>
             this.Settings.PriceSource = PriceFetcher.SourcePoe2Scout;
         }
 
+        if (PriceFetcher.IsUsingFallback)
+        {
+            ImGui.TextColored(new Vector4(0.9f, 0.7f, 0.2f, 1f), this.PluginText.F(
+                "status.automatic_fallback", "Automatic fallback active: {0}", PriceFetcher.ActiveSourceName));
+        }
+
         this.DrawLeagueSelector();
         ImGui.SliderInt("Refresh interval (min)", ref this.Settings.RefreshIntervalMin, 1, 120);
         NinjaPricerSettingsNormalizer.Normalize(this.Settings);
@@ -90,7 +96,12 @@ public sealed class NinjaPricerCore : PCore<NinjaPricerSettings>
         ImGui.SameLine();
         if (PriceFetcher.IsFetching || LeagueProvider.IsLoading)
         {
-            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.2f, 1f), "Loading...");
+            var status = PriceFetcher.IsFailingOver
+                ? this.PluginText.F("status.switching_provider", "Switching to {0}...", PriceFetcher.FetchingSourceName)
+                : PriceFetcher.IsFetching
+                    ? this.PluginText.F("status.loading_provider", "Loading from {0}...", PriceFetcher.FetchingSourceName)
+                    : "Loading...";
+            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.2f, 1f), status);
         }
         else if (PriceFetcher.LastFetchUtc > DateTime.MinValue)
         {

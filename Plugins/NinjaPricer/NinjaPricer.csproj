@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <AssemblyName>NinjaPricer</AssemblyName>
+    <RootNamespace>NinjaPricer</RootNamespace>
+    <!-- Keep auxiliary sources/resources and nested build artifacts out of the plugin. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);test/**;tools/**;**/obj/**;**/bin/**</DefaultItemExcludes>
     <Version>0.1.0</Version>
     <AssemblyVersion>0.1.0.0</AssemblyVersion>
     <FileVersion>0.1.0.0</FileVersion>
@@ -26,6 +30,7 @@
     <None Update="config\settings.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="Localization/*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="LICENSE">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

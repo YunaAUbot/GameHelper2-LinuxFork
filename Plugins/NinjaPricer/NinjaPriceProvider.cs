@@ -20,7 +20,7 @@ public sealed class NinjaPriceProvider : IPriceProvider
             var current = this.settings();
             return new PriceProviderStatus(
                 "NinjaPricer",
-                current.PriceSource == PriceFetcher.SourcePoeNinja ? "poe.ninja" : "poe2scout",
+                PriceFetcher.ActiveSourceName,
                 current.League,
                 PriceFetcher.IsFetching,
                 PriceFetcher.LoadedItemCount,

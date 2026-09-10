@@ -6,6 +6,21 @@ Path of Exile 2; "0.5.x" references are the game patch the build targets.
 Sections marked **For plugin devs** describe newly exposed APIs you can read
 from your own plugins via `Core.*`.
 
+## Linux fork — 2026-09-10
+
+### Fixed
+
+- Ported upstream `db1846896b4142ae5495111ca41e6b258bb29dfd` and
+  `47aeacd` price-provider failover to the shared NinjaPricer service.
+  Requests have a 10-second header/body deadline and one retry; failed
+  providers fall back once without replacing saved preferences. The active
+  provider is shown in settings and reported to every pricing consumer.
+  Complete cached prices survive failure of both services. Optional Ninja
+  enrichment cannot discard valid Scout data during a Ninja outage.
+- Kept the Linux renderer, local performance changes, Atlas Ritual price
+  weights and installed LootValue Ritual fix. The upstream embedded
+  LootValue fetcher is intentionally not reintroduced.
+
 ## [2.7.2] - 2026-09-05
 
 ### Changed
