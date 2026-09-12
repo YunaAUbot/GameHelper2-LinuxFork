@@ -17,8 +17,10 @@ Resolution:
   and automatic whole-plugin conflict resolution. Conflicts list their paths and
   leave both remote refs unchanged. Successful merges still push code and the
   upstream snapshot atomically, including rewritten-history handling.
-- Run local Git integration tests before each scheduled sync, protect the workflow
-  itself from upstream changes, and bound the job to 15 minutes.
+- Expanded local Git integration tests and protected the workflow itself from
+  upstream changes. The existing schedule and workflow permissions are unchanged.
+  Adding an automatic test step would require the OAuth workflow scope, which
+  the available GitHub credential does not have.
 
 Validation: 47 provider tests in canonical and vendored copies; importer layout;
 full Linux solution build and separate package build; Git integration scenarios
