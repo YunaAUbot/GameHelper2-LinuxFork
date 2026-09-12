@@ -142,7 +142,7 @@ namespace GameHelper.RemoteObjects.UiElement
         {
             get
             {
-                if (this.childrenAddresses.Length <= i)
+                if ((uint)i >= (uint)this.childrenAddresses.Length)
                 {
                     return null;
                 }
@@ -203,7 +203,10 @@ namespace GameHelper.RemoteObjects.UiElement
             // F-136: rebuild cache slots to match the new childrenAddresses length.
             // Existing materialised children are dropped; they'll be re-allocated
             // lazily on next this[int] access if still needed.
-            this.childrenCache = new UiElementBase?[this.childrenAddresses.Length];
+            if (this.childrenCache.Length != this.childrenAddresses.Length)
+                this.childrenCache = new UiElementBase?[this.childrenAddresses.Length];
+            else
+                Array.Clear(this.childrenCache);
             this.flags = 0x00;
             this.localScaleMultiplier = 0x01;
             this.relativePosition = Vector2.Zero;
@@ -239,7 +242,10 @@ namespace GameHelper.RemoteObjects.UiElement
             // F-136: rebuild cache slots to match the new childrenAddresses length.
             // Existing materialised children are dropped; they'll be re-allocated
             // lazily on next this[int] access if still needed.
-            this.childrenCache = new UiElementBase?[this.childrenAddresses.Length];
+            if (this.childrenCache.Length != this.childrenAddresses.Length)
+                this.childrenCache = new UiElementBase?[this.childrenAddresses.Length];
+            else
+                Array.Clear(this.childrenCache);
 
             this.positionModifier.X = data.PositionModifier.X;
             this.positionModifier.Y = data.PositionModifier.Y;

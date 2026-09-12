@@ -362,8 +362,9 @@ namespace GameHelper.Utils
         /// <param name="maxSizeAllowed">to remove infinite loops, function will return upon reaching this number</param>
         /// <param name="enableCounting">extract more juice from the cpu</param>
         /// <param name="onEachNotNullNode">function to execute on each std map node that isn't null.</param>
+        /// <param name="cancellationToken">Stops traversal when its owning task is cancelled.</param>
         /// <returns>total nodes/childrens in the stdmap</returns>
-        internal int ReadStdMap<TKey, TValue>(StdMap nativeContainer, int maxSizeAllowed, bool enableCounting, Func<TKey, TValue, bool> onEachNotNullNode)
+        internal int ReadStdMap<TKey, TValue>(StdMap nativeContainer, int maxSizeAllowed, bool enableCounting, Func<TKey, TValue, bool> onEachNotNullNode, CancellationToken cancellationToken = default)
             where TKey : unmanaged
             where TValue : unmanaged
         {
@@ -383,9 +384,10 @@ namespace GameHelper.Utils
 
             // then Parallel.ForEach loop will process those 32 childrens in parallel
             Parallel.ForEach(first64Childrens,
-                new ParallelOptions() { MaxDegreeOfParallelism = Core.GHSettings.EntityReaderMaxDegreeOfParallelism },
+                new ParallelOptions() { MaxDegreeOfParallelism = Core.GHSettings.EntityReaderMaxDegreeOfParallelism, CancellationToken = cancellationToken },
                 // executed once per task/thread
-                () => { return (new Queue<StdMapNode<TKey, TValue>>(2000), new int()); },
+                () => { return (new Queue<StdMapNode<TKey, TValue>>(
+                    Math.Clamp(nativeContainer.Size / Math.Max(1, first64Childrens.Count), 32, 256)), 0); },
                 // executed once per iteration
                 (first32Child, _, _, localState) =>
                 {
@@ -405,6 +407,7 @@ namespace GameHelper.Utils
 
             void processNode(Queue<StdMapNode<TKey, TValue>> childrens, StdMapNode<TKey, TValue> current)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!current.IsNil)
                 {
                     onEachNotNullNode(current.Data.Key, current.Data.Value);

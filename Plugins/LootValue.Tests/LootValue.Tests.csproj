@@ -28,4 +28,18 @@
     <Compile Include="..\LootValue\LootValueSettings.cs" Link="Production\LootValueSettings.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../LootValue/LootValuePrice.cs" Link="Production/LootValuePrice.cs" />
+    <Compile Include="../LootValue/LootValuePricingPolicy.cs" Link="Production/LootValuePricingPolicy.cs" />
+    <Compile Include="../LootValue/ScrollContainerGeometry.cs" Link="Production/ScrollContainerGeometry.cs" />
+    <Compile Include="../LootValue/ScrollProbeStatus.cs" Link="Production/ScrollProbeStatus.cs" />
+    <Compile Include="../LootValue/ScrollProbePolicy.cs" Link="Production/ScrollProbePolicy.cs" />
+    <Compile Include="../LootValue/ScrollRectangleProbeBudget.cs" Link="Production/ScrollRectangleProbeBudget.cs" />
+    <Compile Include="../LootValue/PanelScanBudget.cs" Link="Production/PanelScanBudget.cs" />
+    <Compile Include="../LootValue/PanelTraversalStep.cs" Link="Production/PanelTraversalStep.cs" />
+    <Compile Include="../LootValue/PanelCandidateResult.cs" Link="Production/PanelCandidateResult.cs" />
+    <Compile Include="../LootValue/IncrementalPanelScan.cs" Link="Production/IncrementalPanelScan.cs" />
+    <Compile Include="../LootValue/IncrementalPanelScanScheduler.cs" Link="Production/IncrementalPanelScanScheduler.cs" />
+    <Compile Include="../LootValue/RitualRewardGridPathPolicy.cs" Link="Production/RitualRewardGridPathPolicy.cs" />
+  </ItemGroup>
 </Project>

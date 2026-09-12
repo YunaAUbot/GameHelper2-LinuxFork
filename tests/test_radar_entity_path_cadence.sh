@@ -11,7 +11,7 @@ if 'this.CollectEntityPaths();' in draw:
 rebuild=src[src.index('private void RebuildEntityPaths()'):src.index('private void DrawEntityPaths(')]
 positions=[
     rebuild.index('now < this.nextEntityRecomputeTime'),
-    rebuild.index('this.pendingEntityPathTask != null'),
+    rebuild.index('this.entityWork.IsBusy || this.tileWork.IsBusy'),
     rebuild.index('this.CollectEntityPaths();'),
     rebuild.index('this.entityPathSnapshot.Count == 0'),
 ]

@@ -351,13 +351,16 @@
             #endregion
         }
 
+        private readonly Dictionary<StdTuple2D<int>, Vector2> centerScratch = new();
+        private readonly Dictionary<StdTuple2D<int>, Vector2> shiftedCenterScratch = new();
+
         public override void DrawUI()
         {
-            var inventoryPanel = InventoryPanel();
-
-            var isGameHelperForeground = Process.GetCurrentProcess().MainWindowHandle == GetForegroundWindow();
-            if (!Core.Process.Foreground && !isGameHelperForeground)
+            var atlasUi = Core.States.InGameStateObject.GameUi.Atlas;
+            if (atlasUi.Address == IntPtr.Zero || !atlasUi.IsVisible) return;
+            if (!Core.Process.Foreground && Process.GetCurrentProcess().MainWindowHandle != GetForegroundWindow())
                 return;
+            var inventoryPanel = InventoryPanel();
 
             var player = Core.States.InGameStateObject.CurrentAreaInstance.Player;
             if (!player.TryGetComponent<Render>(out _))
@@ -365,9 +368,6 @@
 
             var drawList = ImGui.GetBackgroundDrawList();
 
-            var atlasUi = Core.States.InGameStateObject.GameUi.Atlas;
-            if (atlasUi.Address == IntPtr.Zero || !atlasUi.IsVisible)
-                return;
 
             // The GameHelper Data Visualization entry GameUi.Atlas already resolves the atlas
             // node-list panel and materializes its children as UiElementBase instances. Use that
@@ -389,7 +389,8 @@
 
             // Screen positions change per frame (panning), but the graph
             // topology is cached with the node cache (~3×/sec).
-            var allCenters = new Dictionary<StdTuple2D<int>, Vector2>(nodeCache.Count);
+            var allCenters = this.centerScratch;
+            allCenters.Clear();
             foreach (var nd in nodeCache)
             {
                 var nu = atlasUi[nd.Index];
@@ -454,7 +455,8 @@
                 var shiftedCenters = allCenters;
                 if (graphOffset != Vector2.Zero)
                 {
-                    shiftedCenters = new Dictionary<StdTuple2D<int>, Vector2>(allCenters.Count);
+                    shiftedCenters = this.shiftedCenterScratch;
+                    shiftedCenters.Clear();
                     foreach (var kv in allCenters)
                         shiftedCenters[kv.Key] = kv.Value + graphOffset;
                 }

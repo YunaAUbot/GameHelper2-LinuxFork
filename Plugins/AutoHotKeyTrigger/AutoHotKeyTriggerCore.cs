@@ -287,8 +287,9 @@ namespace AutoHotKeyTrigger
 
             var area = Core.States.InGameStateObject.CurrentAreaInstance;
             var seen = new HashSet<uint>();
-            foreach (var entity in area.AwakeEntities.Values)
+            foreach (var pair in area.AwakeEntities)
             {
+                var entity = pair.Value;
                 if (entity.EntityType != EntityTypes.Monster)
                 {
                     continue;

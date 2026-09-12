@@ -1,6 +1,7 @@
 namespace Atlas2
 {
     using GameHelper;
+    using GameHelper.Plugin.Price;
     using GameHelper.RemoteObjects.States.InGameStateObjects;
     using GameHelper.RemoteObjects.UiElement;
     using GameHelper.Utils;
@@ -708,7 +709,7 @@ namespace Atlas2
             public List<string> ShortMods2;       // 2nd mod per picked node (null = single-mod)
             public string PathLine;               // "Bastille  >  Headland  >  …"
             public string ModsLine;               // "+25% Tribute   -   Exalted Orbs x2 + Omen: … "
-            public int Weight;                    // sum of user reward weights over the chain's mods
+            public decimal Weight;                // price weights plus manual fallback weights
         }
 
         private readonly List<PlannerChain> plannerChains = new();
@@ -723,6 +724,15 @@ namespace Atlas2
         // chains when the versions diverge (so edits apply live without a full re-enumeration).
         private int plannerWeightsVersion;
         private int plannerChainsWeightsVersion = -1;
+        private readonly RitualRewardPricing ritualRewardPricing = new();
+
+        private void RefreshRitualRewardPrices()
+        {
+            EnsureRewardOptions();
+            if (this.ritualRewardPricing.Refresh(PriceProviderRegistry.Current, Settings.UseNinjaRitualWeights,
+                plannerRewardOptions, DateTime.UtcNow))
+                plannerWeightsVersion++;
+        }
 
         private static readonly Vector4[] PlannerPalette =
         {
@@ -800,24 +810,28 @@ namespace Atlas2
         }
 
         // Settings-window table of per-reward weights (shown while the planner toggle is on).
-        // The planner sorts its route list by the summed weight of each chain's mods, highest
-        // first, so weighted rewards float the best routes to the top. 0 (the default) keeps a
-        // reward neutral; negatives push routes down. Stored sparsely (only nonzero).
+        // Automatic prices replace manual weights when available. Manual values remain stored
+        // as fallbacks and for users who disable automatic weighting.
         private void DrawRewardWeightsTable()
         {
-            EnsureRewardOptions();
+            if (ImGui.Checkbox(this.L("atlas.ritual_ninja_weights", "Weight rewards using NinjaPricer"), ref Settings.UseNinjaRitualWeights))
+                plannerWeightsVersion++;
+            ImGuiHelper.ToolTip(this.L("atlas.ritual_ninja_weights_hint",
+                "Uses Exalted-equivalent prices, multiplied by known quantities. Unknown stack sizes use one item's price (*). " +
+                "Rewards without a price use manual weights. Scores are ranking weights, not guaranteed proceeds; manual weights count as Exalted equivalents."));
+            RefreshRitualRewardPrices();
             ImGui.Indent();
             ImGui.TextUnformatted(this.L("atlas.ritual_weights", "Reward weights"));
-            ImGuiHelper.ToolTip(this.L("atlas.ritual_weights_hint",
-                "Planner routes are sorted by the sum of these weights over the route's predicted " +
-                "rewards, highest first. 0 = neutral; negative pushes a route down the list."));
+            ImGuiHelper.ToolTip(this.L("atlas.ritual_effective_weights_hint",
+                "Routes are sorted by their total weight, highest first. Available automatic prices replace manual weights; otherwise the manual value applies. 0 = neutral; negative lowers priority."));
             if (ImGui.BeginChild("##ritualWeights", new Vector2(0, 240), ImGuiChildFlags.Borders))
             {
-                if (ImGui.BeginTable("##ritualWeightsTable", 2,
+                if (ImGui.BeginTable("##ritualWeightsTable", 3,
                     ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
                 {
                     ImGui.TableSetupColumn(this.L("atlas.weights_reward_col", "Reward"), ImGuiTableColumnFlags.WidthStretch);
-                    ImGui.TableSetupColumn(this.L("atlas.weights_weight_col", "Weight"), ImGuiTableColumnFlags.WidthFixed, 220f);
+                    ImGui.TableSetupColumn(this.L("atlas.ritual_manual_weight", "Manual fallback"), ImGuiTableColumnFlags.WidthFixed, 180f);
+                    ImGui.TableSetupColumn(this.L("atlas.ritual_ninja_value", "NinjaPricer (ex)"), ImGuiTableColumnFlags.WidthFixed, 160f);
                     ImGui.TableHeadersRow();
                     foreach (var opt in plannerRewardOptions)
                     {
@@ -827,6 +841,8 @@ namespace Atlas2
                         ImGui.TableNextColumn();
                         ImGui.TextUnformatted(opt);
                         ImGui.TableNextColumn();
+                        bool hasPrice = this.ritualRewardPricing.TryGet(opt, out var price);
+                        ImGui.BeginDisabled(hasPrice);
                         int w = Settings.RitualRewardWeights.TryGetValue(opt, out var cur) ? cur : 0;
                         ImGui.SetNextItemWidth(-1);
                         if (ImGui.InputInt($"##rw_{opt}", ref w))
@@ -837,6 +853,12 @@ namespace Atlas2
                                 Settings.RitualRewardWeights[opt] = w;
                             plannerWeightsVersion++;
                         }
+                        ImGui.EndDisabled();
+                        ImGui.TableNextColumn();
+                        if (hasPrice)
+                            ImGui.TextUnformatted(price.Weight.ToString("0.###", CultureInfo.InvariantCulture) + (price.UnitOnly ? " *" : string.Empty));
+                        else
+                            ImGui.TextDisabled(this.L("atlas.ritual_manual_fallback", "Manual"));
                     }
 
                     ImGui.EndTable();
@@ -847,21 +869,20 @@ namespace Atlas2
             ImGui.Unindent();
         }
 
-        // Chain weight = sum of the user's reward weights over every predicted mod on the chain
+        // Chain weight = sum of automatic prices or manual fallback weights over every predicted mod
         // (both mods of a two-mod node count). Recomputed + re-sorted only when the weights or
         // the chain set change; ordering is weight DESC, then the path text for stability.
         private void SortPlannerChains()
         {
+            RefreshRitualRewardPrices();
             var weights = Settings.RitualRewardWeights;
             foreach (var c in plannerChains)
             {
-                int w = 0;
+                decimal w = 0;
                 for (int k = 0; k < c.ShortMods.Count; k++)
                 {
-                    if (weights.TryGetValue(c.ShortMods[k], out var w1))
-                        w += w1;
-                    if (c.ShortMods2[k] != null && weights.TryGetValue(c.ShortMods2[k], out var w2))
-                        w += w2;
+                    w += this.ritualRewardPricing.GetWeight(c.ShortMods[k], weights);
+                    w += this.ritualRewardPricing.GetWeight(c.ShortMods2[k], weights);
                 }
 
                 c.Weight = w;
@@ -1250,6 +1271,7 @@ namespace Atlas2
             // roll; a chain matches when ANY selected reward is in it. Stored as '|'-joined
             // short labels so it survives restarts.
             EnsureRewardOptions();
+            RefreshRitualRewardPrices();
             if (plannerChainsWeightsVersion != plannerWeightsVersion)
                 this.SortPlannerChains();   // weights edited in settings — re-rank the cached chains
             var selected = new HashSet<string>(
@@ -1355,7 +1377,11 @@ namespace Atlas2
                 if (c.Weight != 0)
                 {
                     ImGui.SameLine();
-                    ImGui.TextDisabled($"[{c.Weight:+0;-0}]");
+                    ImGui.TextDisabled(Settings.UseNinjaRitualWeights
+                        ? $"[{c.Weight:0.###} ex*]"
+                        : $"[{c.Weight:+0;-0}]");
+                    ImGuiHelper.ToolTip(this.L("atlas.ritual_score_hint",
+                        "Ranking score: known quantities use total prices; unknown quantities use unit prices. Unpriced rewards use manual weights. This is not a guaranteed route value."));
                 }
 
                 ImGui.TextColored(modColor, c.ModsLine);

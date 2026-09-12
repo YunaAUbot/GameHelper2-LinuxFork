@@ -33,8 +33,9 @@ namespace AutoHotKeyTrigger.ProfileManager.DynamicConditions
         public NearbyMonsterInfo(InGameState state)
         {
             this.state = state;
-            foreach (var entity in state.CurrentAreaInstance.AwakeEntities.Values)
+            foreach (var pair in state.CurrentAreaInstance.AwakeEntities)
             {
+                var entity = pair.Value;
                 if (entity.Zones == NearbyZones.None)
                 {
                     continue;
@@ -198,8 +199,9 @@ namespace AutoHotKeyTrigger.ProfileManager.DynamicConditions
             var area = this.state.CurrentAreaInstance;
             var player = area.Player;
             var count = 0;
-            foreach (var entity in area.AwakeEntities.Values)
+            foreach (var pair in area.AwakeEntities)
             {
+                var entity = pair.Value;
                 if (entity.EntityType != EntityTypes.Monster ||
                     entity.EntityState == EntityStates.PinnacleBossHidden ||
                     entity.EntityState == EntityStates.MonsterFriendly)

@@ -24,6 +24,7 @@ namespace GameHelper.Cache
         private readonly GameStateTypes ownerState1;
         private readonly GameStateTypes ownerState2;
         private readonly Dictionary<IntPtr, UiElementBase> cache;
+        private KeyValuePair<IntPtr, UiElementBase>[]? cachedSnapshot;
 
         /// <summary>
         ///     Initializes a new instance of the <see cref="UiElementParents" /> class.
@@ -75,6 +76,7 @@ namespace GameHelper.Cache
                     try
                     {
                         this.cache.Add(address, new(address, this));
+                        this.cachedSnapshot = null;
                     }
                     catch (Exception e)
                     {
@@ -115,14 +117,25 @@ namespace GameHelper.Cache
             return false;
         }
 
-        public void UpdateAllParentsParallel()
+        private KeyValuePair<IntPtr, UiElementBase>[] GetSnapshot()
         {
-            KeyValuePair<IntPtr, UiElementBase>[] snapshot;
             lock (this.cache)
             {
-                snapshot = new KeyValuePair<IntPtr, UiElementBase>[this.cache.Count];
-                ((ICollection<KeyValuePair<IntPtr, UiElementBase>>)this.cache).CopyTo(snapshot, 0);
+                if (this.cachedSnapshot == null)
+                {
+                    this.cachedSnapshot = this.cache.Count == 0 ? Array.Empty<KeyValuePair<IntPtr, UiElementBase>>()
+                        : new KeyValuePair<IntPtr, UiElementBase>[this.cache.Count];
+                    ((ICollection<KeyValuePair<IntPtr, UiElementBase>>)this.cache).CopyTo(this.cachedSnapshot, 0);
+                }
+                return this.cachedSnapshot;
             }
+        }
+
+        public void UpdateAllParentsParallel()
+        {
+            var snapshot = this.GetSnapshot();
+
+            if (snapshot.Length == 0) return;
 
             // A cached parent can be freed/reused by the game after we cached it (the atlas, for
             // example, churns through many node-container parents). Re-validate each parent's
@@ -130,7 +143,7 @@ namespace GameHelper.Cache
             // re-assigning its Address — the forceUpdate setter would otherwise throw "not a Ui
             // Element" and spam the log every frame for every stale entry.
             var stale = new ConcurrentBag<IntPtr>();
-            Parallel.ForEach(snapshot, (data) =>
+            void UpdateParent(KeyValuePair<IntPtr, UiElementBase> data)
             {
                 try
                 {
@@ -147,7 +160,19 @@ namespace GameHelper.Cache
                 {
                     Console.WriteLine($"Failed to update the UiElement Parent in the cache. 0x{data.Key.ToInt64():X} due to {e}");
                 }
-            });
+            }
+
+            if (snapshot.Length < 32)
+            {
+                foreach (var data in snapshot) UpdateParent(data);
+            }
+            else
+            {
+                Parallel.ForEach(snapshot, new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Core.GHSettings.EntityReaderMaxDegreeOfParallelism,
+                }, UpdateParent);
+            }
 
             if (!stale.IsEmpty)
             {
@@ -155,7 +180,7 @@ namespace GameHelper.Cache
                 {
                     foreach (var key in stale)
                     {
-                        this.cache.Remove(key);
+                        if (this.cache.Remove(key)) this.cachedSnapshot = null;
                     }
                 }
             }
@@ -166,17 +191,13 @@ namespace GameHelper.Cache
             lock (this.cache)
             {
                 this.cache.Clear();
+                this.cachedSnapshot = null;
             }
         }
 
         public void ToImGui()
         {
-            KeyValuePair<IntPtr, UiElementBase>[] snapshot;
-            lock (this.cache)
-            {
-                snapshot = new KeyValuePair<IntPtr, UiElementBase>[this.cache.Count];
-                ((ICollection<KeyValuePair<IntPtr, UiElementBase>>)this.cache).CopyTo(snapshot, 0);
-            }
+            var snapshot = this.GetSnapshot();
 
             ImGui.Text($"Total Size: {snapshot.Length}");
             if (ImGui.TreeNode($"{this.name} Parent UiElements"))
@@ -204,6 +225,7 @@ namespace GameHelper.Cache
                     lock (this.cache)
                     {
                         this.cache.Clear();
+                this.cachedSnapshot = null;
                     }
                 }
                 catch (Exception ex)
@@ -226,6 +248,7 @@ namespace GameHelper.Cache
                         lock (this.cache)
                         {
                             this.cache.Clear();
+                this.cachedSnapshot = null;
                         }
                     }
                 }

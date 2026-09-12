@@ -3,6 +3,7 @@ namespace Radar
     using System;
     using System.Collections.Generic;
     using System.Numerics;
+    using System.Threading;
 
     /// <summary>
     /// A* pathfinder that operates directly on the nibble-encoded walkability grid.
@@ -48,6 +49,7 @@ namespace Radar
         /// <param name="start">Start position in grid coordinates.</param>
         /// <param name="end">Goal position in grid coordinates.</param>
         /// <param name="maxIterations">Search budget (nodes to expand).</param>
+        /// <param name="cancellationToken">Cancels search and smoothing after area changes.</param>
         /// <returns>Grid-space path from start to end, or null.</returns>
         public static List<Vector2>? FindPath(
             byte[] walkableData,
@@ -55,7 +57,8 @@ namespace Radar
             Vector2 start,
             Vector2 end,
             HashSet<(int, int)>? doorOverrides = null,
-            int maxIterations = DefaultMaxIterations)
+            int maxIterations = DefaultMaxIterations,
+            CancellationToken cancellationToken = default)
         {
             return FindPath(
                 walkableData,
@@ -65,7 +68,7 @@ namespace Radar
                 (int)Math.Round(end.X),
                 (int)Math.Round(end.Y),
                 doorOverrides,
-                maxIterations);
+                maxIterations, cancellationToken);
         }
 
         /// <summary>
@@ -79,8 +82,10 @@ namespace Radar
             int endX,
             int endY,
             HashSet<(int, int)>? doorOverrides = null,
-            int maxIterations = DefaultMaxIterations)
+            int maxIterations = DefaultMaxIterations,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             // If start is blocked (player near a wall), find the nearest walkable cell.
             if (!LineWalker.IsWalkable(walkableData, bytesPerRow, startX, startY, doorOverrides))
             {
@@ -122,7 +127,7 @@ namespace Radar
             var goalKey = (endX, endY);
 
             // A* data structures
-            var openSet = new PriorityQueue<(int x, int y), float>();
+            var openSet = new PriorityQueue<((int x, int y) node, float g), float>();
             var cameFrom = new Dictionary<(int x, int y), (int x, int y)>();
             var gScore = new Dictionary<(int x, int y), float>();
 
@@ -134,19 +139,22 @@ namespace Radar
             }
 
             gScore[startKey] = 0f;
-            openSet.Enqueue(startKey, Heuristic(startX, startY));
+            openSet.Enqueue((startKey, 0f), Heuristic(startX, startY));
 
             var iterations = 0;
 
             while (openSet.Count > 0 && iterations < maxIterations)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                var entry = openSet.Dequeue();
+                var current = entry.node;
+                if (entry.g != gScore[current]) continue; // Superseded queue entry.
                 iterations++;
-                var current = openSet.Dequeue();
 
                 if (current == goalKey)
                 {
                     var rawPath = ReconstructPath(cameFrom, current, startKey);
-                    return SmoothPath(walkableData, bytesPerRow, rawPath, doorOverrides);
+                    return SmoothPath(walkableData, bytesPerRow, rawPath, doorOverrides, cancellationToken);
                 }
 
                 var currentG = gScore[current];
@@ -184,7 +192,7 @@ namespace Radar
                         cameFrom[neighborKey] = current;
                         gScore[neighborKey] = tentativeG;
                         var fScore = tentativeG + Heuristic(nx, ny);
-                        openSet.Enqueue(neighborKey, fScore);
+                        openSet.Enqueue((neighborKey, tentativeG), fScore);
                     }
                 }
             }
@@ -292,8 +300,10 @@ namespace Radar
             byte[] walkableData,
             int bytesPerRow,
             List<Vector2> rawPath,
-            HashSet<(int, int)>? doorOverrides = null)
+            HashSet<(int, int)>? doorOverrides = null,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (rawPath.Count <= 2)
             {
                 return rawPath;
@@ -308,12 +318,12 @@ namespace Radar
                 var farthest = currentIdx + 1;
                 for (var i = rawPath.Count - 1; i > currentIdx; i--)
                 {
-                    var lineResult = LineWalker.CheckLine(
+                    var isClear = LineWalker.IsLineClear(
                         walkableData, bytesPerRow,
                         rawPath[currentIdx], rawPath[i],
-                        doorOverrides);
+                        doorOverrides, cancellationToken);
 
-                    if (lineResult.IsClear)
+                    if (isClear)
                     {
                         farthest = i;
                         break;

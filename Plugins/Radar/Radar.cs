@@ -76,15 +76,19 @@ namespace Radar
 
         // Pathfinding: cache computed paths and throttle recomputation
         private long nextPoiRecomputeTime = 0;
-        private long nextPoiFullRecomputeTime = 0;
         private Dictionary<string, List<Vector2>?> poiPathCache = new();
-        private Task? pendingPathTask = null;
+        private readonly PathWorkCache<string> poiWork = new();
 
         // Entity pathfinding: cache and throttle for entity-icon-based paths
         private long nextEntityRecomputeTime = 0;
-        private long nextEntityFullRecomputeTime = 0;
         private Dictionary<uint, List<Vector2>?> entityPathCache = new();
-        private Task? pendingEntityPathTask = null;
+        private readonly PathWorkCache<uint> entityWork = new();
+        private readonly PathWorkCache<string> tileWork = new();
+        private HashSet<(int, int)>? cachedDoors;
+        private long nextDoorScan;
+        private int doorRevision;
+        private readonly LinkedList<string> recentAreas = new();
+        private CancellationTokenSource trackedCancellation = new();
         private readonly List<(uint entityId, Vector2 gridPos, Vector4 color)> entityPathSnapshot = new();
         private readonly List<(string cacheKey, Vector2 gridPos, Vector4 color)> tileIconPathSnapshot = new();
         private Dictionary<string, List<Vector2>?> tileIconPathCache = new();
@@ -100,11 +104,12 @@ namespace Radar
         // Static "tracked" map objects (Abyss cracks/pit, specific Strongboxes) remembered per map
         // instance. Fed by the awake-entity pass and a throttled scan of the game's larger-range
         // SleepingEntities map, so they appear well beyond the network bubble and persist once seen.
-        private const int TrackedScanIntervalMs = 1000;
+        private const int TrackedScanIntervalMs = 100;
         private readonly Dictionary<string, ConcurrentDictionary<string, (Vector2 gridPos, float height, string category, string iconKey)>> trackedNodesByArea = new();
         private ConcurrentDictionary<string, (Vector2 gridPos, float height, string category, string iconKey)> trackedNodes = new();
         private long nextTrackedScanTime;
         private Task? pendingTrackedScanTask;
+        private GameHelper.RemoteObjects.States.InGameStateObjects.SleepingEntityScanner? trackedScanner;
 
         private string SettingPathname => Path.Join(this.DllDirectory, "config", "settings.txt");
 
@@ -381,6 +386,12 @@ namespace Radar
             }
 
             this.RefreshAreaIfIdentityChanged();
+            this.poiWork.Pump();
+            this.entityWork.Pump();
+            this.tileWork.Pump();
+            this.poiPathCache = this.poiWork.Paths;
+            this.entityPathCache = this.entityWork.Paths;
+            this.tileIconPathCache = this.tileWork.Paths;
 
             if (this.Settings.DrawWhenForeground && !Core.Process.Foreground)
             {
@@ -414,8 +425,16 @@ namespace Radar
             var trackingPos = new Vector2(playerRender.GridPosition.X, playerRender.GridPosition.Y);
             var trackingHeight = playerRender.TerrainHeight;
 
-            var playerOther = currentAreaInstance.AwakeEntities.Values
-                .FirstOrDefault(e => e.EntitySubtype == EntitySubtypes.PlayerOther);
+            GameHelper.RemoteObjects.States.InGameStateObjects.Entity? playerOther = null;
+            if (this.Settings.AutoDetectCoopMode || this.Settings.EnableCoopMode)
+            {
+                foreach (var kv in currentAreaInstance.AwakeEntities)
+                {
+                    if (kv.Value.EntitySubtype != EntitySubtypes.PlayerOther) continue;
+                    playerOther = kv.Value;
+                    break;
+                }
+            }
             if (this.IsLocalCoopActive(playerRender, playerOther != null))
             {
                 if (playerOther != null && playerOther.TryGetComponent<Render>(out var pOtherRender))
@@ -485,12 +504,9 @@ namespace Radar
                 ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f);
                 ImGui.Begin("###minimapRadar", ImGuiHelper.TransparentWindowFlags);
                 ImGui.PopStyleVar();
-                this.DrawLargeMap(miniMapCenter, trackingPos, trackingHeight, true);
-                this.DrawTgtFiles(miniMapCenter, trackingPos, trackingHeight, true);
-                this.DrawDirectionLines(miniMapCenter, trackingPos, trackingHeight, true);
                 this.DrawTgtIcons(miniMapCenter, trackingPos, trackingHeight, miniMap.Zoom);
                 this.DrawMapIcons(miniMapCenter, trackingPos, trackingHeight, miniMap.Zoom);
-                this.DrawEntityPaths(miniMapCenter, trackingPos, trackingHeight, true);
+                this.DrawEntityPaths(miniMapCenter, trackingPos, trackingHeight);
                 ImGui.End();
             }
         }
@@ -588,11 +604,7 @@ namespace Radar
             }
         }
 
-        private void DrawLargeMap(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawLargeMap(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             if (!this.Settings.DrawWalkableMap)
             {
@@ -623,7 +635,7 @@ namespace Radar
             p3 += mapCenter;
             p4 += mapCenter;
 
-            if (forceWindowDrawList || this.Settings.DrawMapInCull)
+            if (this.Settings.DrawMapInCull)
             {
                 ImGui.GetWindowDrawList().AddImageQuad(this.walkableMapTexture, p1, p2, p3, p4);
             }
@@ -633,11 +645,7 @@ namespace Radar
             }
         }
 
-        private void DrawTgtFiles(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawTgtFiles(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             var col = ImGuiHelper.Color(
                 (uint)(this.Settings.POIColor.X * 255),
@@ -646,7 +654,7 @@ namespace Radar
                 (uint)(this.Settings.POIColor.W * 255));
 
             ImDrawListPtr fgDraw;
-            if (forceWindowDrawList || this.Settings.DrawPOIInCull)
+            if (this.Settings.DrawPOIInCull)
             {
                 fgDraw = ImGui.GetWindowDrawList();
             }
@@ -751,11 +759,7 @@ namespace Radar
             }
         }
 
-        private void DrawDirectionLines(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawDirectionLines(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             var showStraight = this.Settings.ShowStraightLine;
             var showSmooth = this.Settings.ShowSmoothPath;
@@ -782,10 +786,10 @@ namespace Radar
             var gridHeightData = currentAreaInstance.GridHeightData;
 
             // Build door-override map: open doors force their cells to walkable
-            var doorOverrides = LineWalker.BuildDoorOverrideMap(currentAreaInstance);
+            var doorOverrides = this.GetDoorOverrides();
 
             ImDrawListPtr fgDraw;
-            if (forceWindowDrawList || this.Settings.DrawPOIInCull)
+            if (this.Settings.DrawPOIInCull)
             {
                 fgDraw = ImGui.GetWindowDrawList();
             }
@@ -847,44 +851,15 @@ namespace Radar
                 return;
             }
 
-            // --- Throttled background pathfinding ---
+            // Collect and publish on the render thread; workers only read immutable snapshots.
             var now = Environment.TickCount64;
-            var forceFull = now >= this.nextPoiFullRecomputeTime;
-            var shouldRecompute = now >= this.nextPoiRecomputeTime;
-            if (forceFull)
+            if (showSmooth && now >= this.nextPoiRecomputeTime)
             {
-                this.nextPoiFullRecomputeTime = now + this.Settings.PathFullRecomputeIntervalMs;
-                shouldRecompute = true;
-            }
-            if (shouldRecompute)
-            {
-                this.nextPoiRecomputeTime = now + this.Settings.PathRecomputeIntervalMs;
-
-                // Only launch if no previous task is still running
-                if (this.pendingPathTask == null || this.pendingPathTask.IsCompleted)
-                {
-                    // Skip reached POIs — see the note in RebuildEntityPaths. Safe because the
-                    // previous task has completed and this is a private list for the new task.
-                    var snap = poiSnapshot.Where(p => !this.IsReached(p.cacheKey)).ToList();
-                    var wd = walkableData;
-                    var bpr = bytesPerRow;
-                    var pp = pPos;
-                    var doors = doorOverrides;
-                    var segs = forceFull ? 0 : this.Settings.PathRecomputeSegments;
-                    var oldCache = this.poiPathCache;
-                    this.pendingPathTask = Task.Run(() =>
-                    {
-                        var newCache = new Dictionary<string, List<Vector2>?>();
-                        foreach (var (key, pos) in snap)
-                        {
-                            oldCache.TryGetValue(key, out var prev);
-                            newCache[key] = ComputePath(wd, bpr, pp, pos, doors, prev, segs);
-                        }
-
-                        // Atomically swap the cache — render thread sees old or new, never torn
-                        Interlocked.Exchange(ref this.poiPathCache, newCache);
-                    });
-                }
+                this.nextPoiRecomputeTime = now + Math.Max(5, this.Settings.PathRecomputeIntervalMs);
+                this.poiWork.Schedule(poiSnapshot.Where(p => !this.IsReached(p.cacheKey)), pPos,
+                    this.doorRevision, this.Settings.PathRecomputeSegments, this.Settings.PathFullRecomputeIntervalMs,
+                    (target, previous, segments, token) => ComputePath(
+                        walkableData, bytesPerRow, pPos, target, doorOverrides, previous, segments, token));
             }
 
             // --- Draw each POI from cache ---
@@ -1888,24 +1863,10 @@ namespace Radar
             }
 
             var now = Environment.TickCount64;
-            var forceFull = now >= this.nextEntityFullRecomputeTime;
-            if (now < this.nextEntityRecomputeTime && !forceFull)
-            {
-                return;
-            }
+            if (now < this.nextEntityRecomputeTime) return;
+            this.nextEntityRecomputeTime = now + Math.Max(5, this.Settings.PathRecomputeIntervalMs);
 
-            if (forceFull)
-            {
-                this.nextEntityFullRecomputeTime = now + this.Settings.PathFullRecomputeIntervalMs;
-            }
-
-            this.nextEntityRecomputeTime = now + this.Settings.PathRecomputeIntervalMs;
-
-            if (this.pendingEntityPathTask != null && !this.pendingEntityPathTask.IsCompleted)
-            {
-                return;
-            }
-
+            if (this.entityWork.IsBusy || this.tileWork.IsBusy) return;
             this.CollectEntityPaths();
             if (this.entityPathSnapshot.Count == 0 && this.tileIconPathSnapshot.Count == 0)
             {
@@ -1926,54 +1887,26 @@ namespace Radar
             }
 
             var pPos = new Vector2(playerRender.GridPosition.X, playerRender.GridPosition.Y);
-            var doorOverrides = LineWalker.BuildDoorOverrideMap(currentAreaInstance);
+            var doorOverrides = this.GetDoorOverrides();
 
-            // Exclude reached targets from the work the background task does. This is safe:
-            // the task gets its own private copy here, and the throttle above guarantees the
-            // previous task has already completed (the pipeline is effectively "restarted"
-            // each cycle), so we never mutate data a running task is reading. Reached entries
-            // drop out of the cache on the next swap, and the draw path skips them regardless.
-            var snap = this.entityPathSnapshot
-                .Where(e => !this.IsReached($"entity|{e.entityId}")).ToArray();
-            var tileSnap = this.tileIconPathSnapshot
-                .Where(t => !this.IsReached(t.cacheKey)).ToArray();
-            var segs = forceFull ? 0 : this.Settings.PathRecomputeSegments;
-            var oldEntityCache = this.entityPathCache;
-            var oldTileCache = this.tileIconPathCache;
-            var wd = walkableData;
-            var bpr = bytesPerRow;
-            var pp = pPos;
-            var doors = doorOverrides;
-
-            this.pendingEntityPathTask = Task.Run(() =>
-            {
-                var newCache = new Dictionary<uint, List<Vector2>?>();
-                foreach (var (id, pos, _) in snap)
-                {
-                    oldEntityCache.TryGetValue(id, out var prev);
-                    newCache[id] = ComputePath(wd, bpr, pp, pos, doors, prev, segs);
-                }
-
-                var newTileCache = new Dictionary<string, List<Vector2>?>();
-                foreach (var (key, pos, _) in tileSnap)
-                {
-                    oldTileCache.TryGetValue(key, out var prev);
-                    newTileCache[key] = ComputePath(wd, bpr, pp, pos, doors, prev, segs);
-                }
-
-                Interlocked.Exchange(ref this.entityPathCache, newCache);
-                Interlocked.Exchange(ref this.tileIconPathCache, newTileCache);
-            });
+            this.entityWork.Schedule(
+                this.entityPathSnapshot.Where(e => !this.IsReached($"entity|{e.entityId}"))
+                    .Select(e => (e.entityId, e.gridPos)), pPos, this.doorRevision,
+                this.Settings.PathRecomputeSegments, this.Settings.PathFullRecomputeIntervalMs,
+                (target, previous, segments, token) => ComputePath(
+                    walkableData, bytesPerRow, pPos, target, doorOverrides, previous, segments, token));
+            this.tileWork.Schedule(
+                this.tileIconPathSnapshot.Where(t => !this.IsReached(t.cacheKey))
+                    .Select(t => (t.cacheKey, t.gridPos)), pPos, this.doorRevision,
+                this.Settings.PathRecomputeSegments, this.Settings.PathFullRecomputeIntervalMs,
+                (target, previous, segments, token) => ComputePath(
+                    walkableData, bytesPerRow, pPos, target, doorOverrides, previous, segments, token));
         }
 
         /// <summary>
         /// Draws cached entity paths. Must be called after CollectEntityPaths.
         /// </summary>
-        private void DrawEntityPaths(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawEntityPaths(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             if (!this.Settings.ShowEntityPaths ||
                 (this.entityPathSnapshot.Count == 0 && this.tileIconPathSnapshot.Count == 0))
@@ -1985,7 +1918,7 @@ namespace Radar
             var gridHeightData = currentAreaInstance.GridHeightData;
 
             ImDrawListPtr fgDraw;
-            if (forceWindowDrawList || this.Settings.DrawPOIInCull)
+            if (this.Settings.DrawPOIInCull)
             {
                 fgDraw = ImGui.GetWindowDrawList();
             }
@@ -2105,6 +2038,16 @@ namespace Radar
                 return;
             }
 
+            this.recentAreas.Remove(areaHash);
+            this.recentAreas.AddLast(areaHash);
+            while (this.recentAreas.Count > 16)
+            {
+                var oldest = this.recentAreas.First!.Value;
+                this.recentAreas.RemoveFirst();
+                this.reachedPathKeysByArea.Remove(oldest);
+                this.trackedNodesByArea.Remove(oldest);
+            }
+
             if (!this.reachedPathKeysByArea.TryGetValue(areaHash, out var set))
             {
                 set = new HashSet<string>();
@@ -2175,9 +2118,10 @@ namespace Radar
         /// </summary>
         private void RebuildTrackedNodes()
         {
+            this.Settings.AbyssIcons.TryGetValue("Abyss Crack", out var crackIcon);
+            this.Settings.AbyssIcons.TryGetValue("Abyss Pit", out var pitIcon);
             var anyEnabled =
-                (this.Settings.AbyssIcons.TryGetValue("Abyss Crack", out var crackIcon) && crackIcon.Draw) ||
-                (this.Settings.AbyssIcons.TryGetValue("Abyss Pit", out var pitIcon) && pitIcon.Draw) ||
+                crackIcon?.Draw == true || pitIcon?.Draw == true ||
                 this.Settings.StrongboxIcons.Values.Any(i => i.Draw);
             if (!anyEnabled)
             {
@@ -2197,13 +2141,20 @@ namespace Radar
                 return;
             }
 
+            _ = this.pendingTrackedScanTask?.Exception;
             var areaInstance = Core.States.InGameStateObject.CurrentAreaInstance;
             var target = this.trackedNodes;
+            var scanner = this.trackedScanner ??= new(areaInstance);
+            var token = this.trackedCancellation.Token;
+            var enabled = new HashSet<string>(this.Settings.StrongboxIcons.Where(kv => kv.Value.Draw).Select(kv => kv.Key));
+            if (crackIcon?.Draw == true) enabled.Add("Abyss Crack");
+            if (pitIcon?.Draw == true) enabled.Add("Abyss Pit");
             this.pendingTrackedScanTask = Task.Run(() =>
             {
-                areaInstance.ScanSleepingEntities(
-                    p => ClassifyTrackedPath(p) != null,
-                    (key, entity) =>
+                using var profile = GameHelper.Ui.PerformanceProfiler.Profile("Radar", "SleepingEntitiesBatch");
+                scanner.ScanNext(
+                    p => ClassifyTrackedPath(p) is { } classification && enabled.Contains(classification.iconKey),
+                    entity =>
                     {
                         if (!entity.TryGetComponent<Render>(out var r))
                         {
@@ -2219,8 +2170,9 @@ namespace Radar
                         var (category, iconKey) = classified.Value;
                         var gridPos = new Vector2(r.GridPosition.X, r.GridPosition.Y);
                         var k = $"{category}|{iconKey}|{(int)gridPos.X}|{(int)gridPos.Y}";
+                        token.ThrowIfCancellationRequested();
                         target[k] = (gridPos, r.TerrainHeight, category, iconKey);
-                    });
+                    }, token);
             });
         }
 
@@ -2317,34 +2269,41 @@ namespace Radar
             Vector2 targetPos,
             HashSet<(int, int)>? doorOverrides,
             List<Vector2>? previousPath,
-            int segments)
+            int segments,
+            CancellationToken cancellationToken = default)
         {
+            using var profile = GameHelper.Ui.PerformanceProfiler.Profile("Radar", "ComputePath");
+            cancellationToken.ThrowIfCancellationRequested();
             // Full recompute if segments is 0, no previous path, or path is too short
-            if (segments <= 0 || previousPath == null || previousPath.Count <= segments + 1)
+            if (segments <= 0 || previousPath == null || previousPath.Count < 2)
             {
-                var lineResult = LineWalker.CheckLine(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides);
-                if (lineResult.IsClear)
+                var isClear = LineWalker.IsLineClear(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides, cancellationToken);
+                if (isClear)
                 {
                     return new List<Vector2> { playerPos, targetPos };
                 }
 
-                return Pathfinder.FindPath(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides);
+                return Pathfinder.FindPath(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides, cancellationToken: cancellationToken);
             }
 
+            // Preserve a tail even when smoothing reduced a long route to only a few corners.
+            segments = Math.Min(segments, Math.Max(1, previousPath.Count - 2));
             // Partial recompute: path from player to old path point N, then splice
             var splicePoint = previousPath[segments];
-            var partialPath = Pathfinder.FindPath(walkableData, bytesPerRow, playerPos, splicePoint, doorOverrides);
+            var partialPath = LineWalker.IsLineClear(walkableData, bytesPerRow, playerPos, splicePoint, doorOverrides, cancellationToken)
+                ? new List<Vector2> { playerPos, splicePoint }
+                : Pathfinder.FindPath(walkableData, bytesPerRow, playerPos, splicePoint, doorOverrides, cancellationToken: cancellationToken);
 
             if (partialPath == null || partialPath.Count == 0)
             {
                 // Partial path failed — fall back to full recompute
-                var lineResult = LineWalker.CheckLine(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides);
-                if (lineResult.IsClear)
+                var isClear = LineWalker.IsLineClear(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides, cancellationToken);
+                if (isClear)
                 {
                     return new List<Vector2> { playerPos, targetPos };
                 }
 
-                return Pathfinder.FindPath(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides);
+                return Pathfinder.FindPath(walkableData, bytesPerRow, playerPos, targetPos, doorOverrides, cancellationToken: cancellationToken);
             }
 
             // Splice: partial path + tail of old path (skip the splice point to avoid duplicate)
@@ -2727,21 +2686,47 @@ namespace Radar
             }
         }
 
+        private HashSet<(int, int)>? GetDoorOverrides()
+        {
+            var now = Environment.TickCount64;
+            if (now < this.nextDoorScan) return this.cachedDoors;
+            this.nextDoorScan = now + 250;
+            var updated = LineWalker.BuildDoorOverrideMap(Core.States.InGameStateObject.CurrentAreaInstance);
+            if ((updated == null) != (this.cachedDoors == null) ||
+                (updated != null && !updated.SetEquals(this.cachedDoors!)))
+            {
+                this.cachedDoors = updated;
+                this.doorRevision++;
+            }
+            return this.cachedDoors;
+        }
+
         private void CleanUpRadarPluginCaches()
         {
             this.delveChestCache.Clear();
             this.textHalfSizeCache.Clear();
             this.poiIndexHalfSizeCache.Clear();
-            this.poiPathCache.Clear();
+            this.poiWork.Reset();
+            this.entityWork.Reset();
+            this.tileWork.Reset();
+            this.poiPathCache = this.poiWork.Paths;
+            this.entityPathCache = this.entityWork.Paths;
+            this.tileIconPathCache = this.tileWork.Paths;
+            this.cachedDoors = null;
+            this.nextDoorScan = 0;
+            this.doorRevision++;
+            var oldTrackedCancellation = this.trackedCancellation;
+            oldTrackedCancellation.Cancel();
+            if (this.pendingTrackedScanTask is { } scan)
+                _ = scan.ContinueWith(t => { _ = t.Exception; oldTrackedCancellation.Dispose(); }, TaskScheduler.Default);
+            else oldTrackedCancellation.Dispose();
+            this.trackedCancellation = new();
+            this.pendingTrackedScanTask = null;
+            this.trackedScanner = null;
+            this.nextTrackedScanTime = 0;
             this.nextPoiRecomputeTime = 0;
-            this.nextPoiFullRecomputeTime = 0;
-            this.pendingPathTask = null;
-            this.entityPathCache.Clear();
             this.nextEntityRecomputeTime = 0;
-            this.nextEntityFullRecomputeTime = 0;
-            this.pendingEntityPathTask = null;
             this.entityPathSnapshot.Clear();
-            this.tileIconPathCache.Clear();
             this.tileIconPathSnapshot.Clear();
             this.RemoveMapTexture();
             this.currentAreaName = string.Empty;

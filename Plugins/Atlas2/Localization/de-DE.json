@@ -1,0 +1,9 @@
+{
+  "atlas.ritual_ninja_weights": "Belohnungen mit NinjaPricer gewichten",
+  "atlas.ritual_ninja_weights_hint": "Nutzt den Gegenwert in Exalted Orbs mal bekannter Menge. Bei unbekannter Menge gilt der Stückpreis (*). Ohne Preis gilt das manuelle Gewicht. Die Gewichte dienen der Rangfolge, sie sind kein garantierter Erlös; manuelle Gewichte zählen als Exalted-Gegenwert.",
+  "atlas.ritual_ninja_value": "NinjaPricer (ex)",
+  "atlas.ritual_manual_fallback": "Manuell",
+  "atlas.ritual_score_hint": "Rangfolgewert: Bei bekannter Menge gilt der Gesamtpreis, sonst der Stückpreis. Ohne Preis gilt das manuelle Gewicht. Dies ist kein garantierter Routenwert.",
+  "atlas.ritual_effective_weights_hint": "Routen werden nach Gesamtgewicht absteigend sortiert. Verfügbare automatische Preise ersetzen manuelle Gewichte; sonst gilt der manuelle Wert. 0 = neutral; negative Werte senken die Priorität.",
+  "atlas.ritual_manual_weight": "Manuelles Ersatzgewicht"
+}

@@ -132,8 +132,9 @@ namespace RitualWispAlert
             if (player == null || worldInstance == null) return;
 
             var drawList = ImGui.GetBackgroundDrawList();
-            foreach (var entity in areaInstance.AwakeEntities.Values)
+            foreach (var pair in areaInstance.AwakeEntities)
             {
+                var entity = pair.Value;
                 if (!entity.IsValid ||
                     entity.Path?.Contains(WispMetadataPath, StringComparison.OrdinalIgnoreCase) != true ||
                     !entity.TryGetComponent<Render>(out var render)) continue;

@@ -658,7 +658,8 @@
                 }
 
                 var entries = this.BuildDisplayEntriesForBar(bar.Watchlist, activeLookup);
-                var buffRow = entries.Where(e => e.IsActive || this.Settings.ShowInactiveWatchlist).ToList();
+                // BuildDisplayEntriesForBar already applies ShowInactiveWatchlist.
+                var buffRow = entries;
                 if (bar.ShowPositionDummy && !bar.AnchorToHealthBar)
                 {
                     this.DrawPositionDummy(

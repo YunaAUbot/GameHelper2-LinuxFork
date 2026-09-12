@@ -1027,8 +1027,9 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                 return false;
             }
 
-            foreach (var entity in currentArea.AwakeEntities.Values)
+            foreach (var pair in currentArea.AwakeEntities)
             {
+                var entity = pair.Value;
                 if (entity.EntitySubtype == GameHelper.RemoteEnums.Entity.EntitySubtypes.PlayerOther)
                 {
                     return true;

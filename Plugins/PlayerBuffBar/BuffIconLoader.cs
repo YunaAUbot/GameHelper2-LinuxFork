@@ -18,6 +18,7 @@ namespace PlayerBuffBar
         private readonly HashSet<string> failedDownloads = new(StringComparer.OrdinalIgnoreCase);
         private readonly object sync = new();
 
+        private static readonly string[] TextureExtensions = { ".webp", ".png" };
         private string iconsDirectory = string.Empty;
         private string pluginDirectory = string.Empty;
         private BuffIconCatalog.IconMapData iconMap;
@@ -77,7 +78,7 @@ namespace PlayerBuffBar
 
         public bool TryGetTexture(string watchId, out IntPtr ptr, out int w, out int h)
         {
-            foreach (var extension in new[] { ".webp", ".png" })
+            foreach (var extension in TextureExtensions)
             {
                 var cacheName = BuffIconCatalog.BuildCacheFileName(watchId, extension);
                 if (this.textures.TryGetValue(cacheName, out var tex) && tex.Ptr != IntPtr.Zero)

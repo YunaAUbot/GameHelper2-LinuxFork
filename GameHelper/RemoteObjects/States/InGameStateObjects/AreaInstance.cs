@@ -51,6 +51,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
         private Rarity entityRarityFilter;
         private byte filterBy;
         private int lastSleepingScanCount;
+        private ConcurrentDictionary<(IntPtr Address, uint Id, IntPtr Details), string> sleepingPaths = new();
 
         private StdVector environmentPtr;
         private readonly List<int> environments;
@@ -295,8 +296,9 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
                 return;
             }
 
-            foreach (var entity in this.AwakeEntities.Values)
+            foreach (var pair in this.AwakeEntities)
             {
+                var entity = pair.Value;
                 if (!entity.IsValid)
                 {
                     continue;
@@ -713,6 +715,7 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
             this.uselesssEntities = 0;
             this.AwakeEntities.Clear();
             this.SleepingEntities.Clear();
+            this.sleepingPaths = new();
             this.lastSleepingScanCount = 0;
             this.EntityCaches.ForEach((e) => e.Clear());
 
@@ -744,34 +747,48 @@ namespace GameHelper.RemoteObjects.States.InGameStateObjects
         /// <param name="onMatch">Invoked (possibly concurrently) for each matching entity.</param>
         /// <returns>Total number of sleeping entities scanned.</returns>
         public int ScanSleepingEntities(Func<string, bool> pathFilter, Action<EntityNodeKey, Entity> onMatch)
+            => this.ScanSleepingEntities(pathFilter, onMatch, CancellationToken.None);
+
+        /// <summary>Scans sleeping objects without constructing components for rejected paths.</summary>
+        public int ScanSleepingEntities(Func<string, bool> pathFilter, Action<EntityNodeKey, Entity> onMatch,
+            CancellationToken cancellationToken)
         {
             if (this.Address == IntPtr.Zero)
             {
                 return 0;
             }
 
+            var address = this.Address;
+            var areaHash = this.AreaHash;
             var reader = Core.Process.Handle;
-            var data = reader.ReadMemory<AreaInstanceOffsets>(this.Address);
-            return reader.ReadStdMap<EntityNodeKey, EntityNodeValue>(
-                data.Entities.SleepingEntities,
-                500000,
-                true,
+            var data = reader.ReadMemory<AreaInstanceOffsets>(address);
+            var oldPaths = this.sleepingPaths;
+            var newPaths = new ConcurrentDictionary<(IntPtr, uint, IntPtr), string>();
+            var count = reader.ReadStdMap<EntityNodeKey, EntityNodeValue>(
+                data.Entities.SleepingEntities, 500000, true,
                 (key, value) =>
                 {
-                    // Drop torn-read entries whose pointer can't back a real entity.
-                    if (!SafeMemoryHandle.IsValidAddress(value.EntityPtr))
+                    if (!reader.TryReadMemory<EntityOffsets>(value.EntityPtr, out var identity)) return false;
+                    var pathKey = (value.EntityPtr, identity.Id, identity.ItemBase.EntityDetailsPtr);
+                    if (!oldPaths.TryGetValue(pathKey, out var path))
                     {
-                        return false;
+                        if (!reader.TryReadMemory<EntityDetails>(identity.ItemBase.EntityDetailsPtr, out var details)) return false;
+                        path = reader.ReadStdWString(details.name);
                     }
-
-                    var entity = new Entity(value.EntityPtr);
-                    if (!string.IsNullOrEmpty(entity.Path) && pathFilter(entity.Path))
+                    if (string.IsNullOrEmpty(path)) return false;
+                    newPaths[pathKey] = path;
+                    if (pathFilter(path))
                     {
-                        onMatch(key, entity);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var entity = new Entity(value.EntityPtr);
+                        // The live tree can mutate between identity and component reads.
+                        if (entity.Id == identity.Id && entity.Path == path) onMatch(key, entity);
                     }
-
                     return true;
-                });
+                }, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (this.Address == address && this.AreaHash == areaHash) this.sleepingPaths = newPaths;
+            return count;
         }
 
         private void ScanSleepingEntitiesForAbyss()

@@ -1,0 +1,9 @@
+{
+  "atlas.ritual_ninja_weights": "Weight rewards using NinjaPricer",
+  "atlas.ritual_ninja_weights_hint": "Uses Exalted-equivalent prices, multiplied by known quantities. Unknown stack sizes use one item's price (*). Rewards without a price use manual weights. Scores are ranking weights, not guaranteed proceeds; manual weights count as Exalted equivalents.",
+  "atlas.ritual_ninja_value": "NinjaPricer (ex)",
+  "atlas.ritual_manual_fallback": "Manual",
+  "atlas.ritual_score_hint": "Ranking score: known quantities use total prices; unknown quantities use unit prices. Unpriced rewards use manual weights. This is not a guaranteed route value.",
+  "atlas.ritual_effective_weights_hint": "Routes are sorted by their total weight, highest first. Available automatic prices replace manual weights; otherwise the manual value applies. 0 = neutral; negative lowers priority.",
+  "atlas.ritual_manual_weight": "Manual fallback"
+}

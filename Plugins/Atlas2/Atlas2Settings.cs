@@ -77,6 +77,7 @@ namespace Atlas2
         public string RitualRewardFilter = string.Empty;
         public float RitualPlannerFontScale = 1f;
         public Dictionary<string, int> RitualRewardWeights = [];
+        public bool UseNinjaRitualWeights = true;
         public bool ShowMapBadges = true;
         public bool ShowMapCounts = false;
         public bool ShowContent = true;
