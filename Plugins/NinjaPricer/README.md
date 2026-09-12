@@ -15,3 +15,10 @@ GameHelper allows one shared price provider at a time. NinjaPricer never replace
 registration. If a competing provider enabled first, NinjaPricer remains inactive and reports which
 provider owns the registry; disable the competitor and enable NinjaPricer first. On disable,
 NinjaPricer unregisters only the registration owned by its own plugin instance.
+
+## Repository layout verification
+
+Production source and the plugin project live at repository root; tests and any
+auxiliary tools belong under `test/`. See [ROOT_LAYOUT.md](ROOT_LAYOUT.md) for the
+verified Git importer contract, test commands, and builds against an already-built
+GameHelper2 host without modifying it.

@@ -1,0 +1,5 @@
+{
+  "status.automatic_fallback": "Automatic fallback active: {0}",
+  "status.loading_provider": "Loading from {0}...",
+  "status.switching_provider": "Switching to {0}..."
+}

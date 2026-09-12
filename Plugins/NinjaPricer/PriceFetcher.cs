@@ -40,6 +40,7 @@ namespace NinjaPricer
         /// (deleted + refetched) rather than trusted. Bump when the cache shape or how it's built changes.</summary>
         public int CacheVersion { get; set; }
         public int PriceSource { get; set; }
+        public int? PreferredPriceSource { get; set; }
         public string League { get; set; } = string.Empty;
         public DateTime LastFetchUtc { get; set; }
         public double ChaosPerDivine { get; set; }
@@ -130,6 +131,10 @@ namespace NinjaPricer
         private static int consecutiveFailureCount;
         private static DateTime nextRetryUtc = DateTime.MinValue;
         private static int configuredSource = SourcePoe2Scout;
+        private static int activeSource = SourcePoe2Scout;
+        private static int fetchingSource = SourcePoe2Scout;
+        private static bool isFailingOver;
+        internal static TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
         private static string configuredLeague = "Runes of Aldur";
         private static int configuredRefreshMinutes = 5;
         private static double chaosPerDivine = 12.0;
@@ -140,12 +145,17 @@ namespace NinjaPricer
         private static bool pendingRefresh;
         private static bool enabled;
 
-        private sealed record FetchSettings(int Source, string League, int RefreshMinutes, string PluginDirectory, string CachePath);
+        private sealed record FetchSettings(int Source, string League, int RefreshMinutes, string PluginDirectory, string CachePath, int PreferredSource);
 
         public static double DivineToExaltedRate { get; private set; } = 80.0;
         public static int LoadedItemCount { get; private set; }
         public static DateTime LastFetchUtc => lastFetchTime;
         public static bool IsFetching => isFetching;
+        public static bool IsFailingOver { get { lock (Gate) return isFailingOver; } }
+        public static bool IsUsingFallback { get { lock (Gate) return activeSource != configuredSource; } }
+        public static string ActiveSourceName { get { lock (Gate) return SourceName(activeSource); } }
+        public static string FetchingSourceName { get { lock (Gate) return SourceName(fetchingSource); } }
+        private static string SourceName(int source) => source == SourcePoeNinja ? "poe.ninja" : "poe2scout";
         internal static string LastFetchError { get { lock (Gate) return lastFetchError; } }
         public static int ConsecutiveFailureCount { get { lock (Gate) return consecutiveFailureCount; } }
         public static DateTime NextRetryUtc { get { lock (Gate) return nextRetryUtc; } }
@@ -167,7 +177,7 @@ namespace NinjaPricer
 
         private static HttpClient CreateHttpClient()
         {
-            var client = new HttpClient { Timeout = TimeSpan.FromSeconds(45) };
+            var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             client.DefaultRequestHeaders.Add("User-Agent", "NinjaPricer-GameHelper-Plugin");
             return client;
         }
@@ -186,6 +196,8 @@ namespace NinjaPricer
                 configuredRefreshMinutes = refresh;
                 if (identityChanged)
                 {
+                    activeSource = source;
+                    isFailingOver = false;
                     activationGeneration++;
                     ClearPublishedDataLocked();
                     ResetFailureHealthLocked();
@@ -669,7 +681,9 @@ namespace NinjaPricer
             activeCancellation?.Dispose();
             activeCancellation = new CancellationTokenSource();
             var generation = activationGeneration;
-            var settings = new FetchSettings(configuredSource, configuredLeague, configuredRefreshMinutes, pluginDir, cacheFilePath);
+            var settings = new FetchSettings(activeSource, configuredLeague, configuredRefreshMinutes, pluginDir, cacheFilePath, configuredSource);
+            fetchingSource = settings.Source;
+            isFailingOver = false;
             var token = activeCancellation.Token;
             activeTask = Task.Run(() => FetchPricesAsync(settings, generation, token));
         }
@@ -696,24 +710,62 @@ namespace NinjaPricer
                 double divChaos = chaosPerDivine;
                 double exChaos = chaosPerExalted;
 
-                if (settings.Source == SourcePoe2Scout)
+                async Task<RatePair> FetchProvider(FetchSettings attempt, bool enrichScout = true)
                 {
-                    var rates = await FetchFromScoutAsync(settings, flat, uniques, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
-                    divChaos = rates.DivChaos;
-                    exChaos = rates.ExChaos;
+                    RatePair rates;
+                    if (attempt.Source == SourcePoe2Scout)
+                    {
+                        rates = await FetchFromScoutAsync(attempt, flat, uniques, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
+                        ValidateFetched(flat, uniques, pathNames, rates.DivChaos, rates.ExChaos);
+                        if (!enrichScout) return rates; // Ninja already failed earlier in this refresh.
+                        // Optional Ninja enrichment must not discard a complete Scout result during a Ninja outage.
+                        var enriched = new Dictionary<string, double>(flat, StringComparer.OrdinalIgnoreCase);
+                        var enrichedPaths = new Dictionary<string, string>(pathNames, StringComparer.OrdinalIgnoreCase);
+                        try
+                        {
+                            var enrichedRates = await FetchNinjaStashOverviewsAsync(attempt, enriched, enrichedPaths,
+                                rates.DivChaos, rates.ExChaos, token).ConfigureAwait(false);
+                            ValidateFetched(enriched, uniques, enrichedPaths, enrichedRates.DivChaos, enrichedRates.ExChaos);
+                            flat = enriched;
+                            pathNames = enrichedPaths;
+                            rates = enrichedRates;
+                        }
+                        catch (Exception ex) when (!token.IsCancellationRequested && IsProviderFailure(ex))
+                        {
+                            Console.WriteLine($"[NinjaPricer] Optional Ninja enrichment unavailable: {ex.Message}");
+                        }
+                    }
+                    else
+                    {
+                        rates = await FetchFromNinjaAsync(attempt, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
+                    }
+                    ValidateFetched(flat, uniques, pathNames, rates.DivChaos, rates.ExChaos);
+                    return rates;
+                }
 
-                    // Scout unique prices are often too low; merge poe.ninja stash uniques as a floor/ceiling check.
-                    // pathNames is shared so the art->name index is built from BOTH sources (union).
-                    var ninjaStashRates = await FetchNinjaStashOverviewsAsync(settings, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
-                    divChaos = ninjaStashRates.DivChaos;
-                    exChaos = ninjaStashRates.ExChaos;
-                }
-                else
+                RatePair result;
+                try
                 {
-                    var rates = await FetchFromNinjaAsync(settings, flat, pathNames, divChaos, exChaos, token).ConfigureAwait(false);
-                    divChaos = rates.DivChaos;
-                    exChaos = rates.ExChaos;
+                    result = await FetchProvider(settings).ConfigureAwait(false);
                 }
+                catch (Exception ex) when (!token.IsCancellationRequested && IsProviderFailure(ex))
+                {
+                    lock (Gate)
+                    {
+                        if (!enabled || generation != activationGeneration) return false;
+                        settings = settings with { Source = settings.Source == SourcePoeNinja ? SourcePoe2Scout : SourcePoeNinja };
+                        fetchingSource = settings.Source;
+                        isFailingOver = true;
+                    }
+                    Console.WriteLine($"[NinjaPricer] Switching to {SourceName(settings.Source)}: {ex.Message}");
+                    // Never mix an incomplete failed provider with the fallback result.
+                    flat.Clear();
+                    uniques.Clear();
+                    pathNames.Clear();
+                    result = await FetchProvider(settings, enrichScout: false).ConfigureAwait(false);
+                }
+                divChaos = result.DivChaos;
+                exChaos = result.ExChaos;
 
                 var fetchedAt = DateTime.UtcNow;
                 lock (Gate)
@@ -731,6 +783,7 @@ namespace NinjaPricer
                         DivineToExaltedRate = chaosPerDivine / chaosPerExalted;
                     LoadedItemCount = flat.Count + uniques.Values.Sum(v => v.Count);
                     lastFetchTime = fetchedAt;
+                    activeSource = settings.Source;
                     ResetFailureHealthLocked();
                 }
                 success = true;
@@ -761,6 +814,7 @@ namespace NinjaPricer
                 lock (Gate)
                 {
                     isFetching = false;
+                    isFailingOver = false;
                     if (enabled && pendingRefresh)
                     {
                         pendingRefresh = false;
@@ -1210,7 +1264,8 @@ namespace NinjaPricer
 
                 // Valid cache, but for a different source/league than currently selected — leave the file
                 // (the next fetch overwrites it) and just fall through to refetch.
-                if (snapshot.PriceSource != configuredSource) return false;
+                if ((snapshot.PreferredPriceSource ?? snapshot.PriceSource) != configuredSource) return false;
+                if (snapshot.PriceSource is not (SourcePoeNinja or SourcePoe2Scout)) return false;
                 if (!string.Equals(snapshot.League, configuredLeague, StringComparison.OrdinalIgnoreCase)) return false;
                 ValidateCacheSnapshot(snapshot);
 
@@ -1228,6 +1283,7 @@ namespace NinjaPricer
                     if (chaosPerExalted > 0)
                         DivineToExaltedRate = chaosPerDivine / chaosPerExalted;
                     lastFetchTime = snapshot.LastFetchUtc;
+                    activeSource = snapshot.PriceSource;
                     LoadedItemCount = flatPricesChaos.Count + uniqueListingsByName.Values.Sum(v => v.Count);
                 }
 
@@ -1263,7 +1319,7 @@ namespace NinjaPricer
 
             var snapshot = new PriceCacheSnapshot
             {
-                CacheVersion = CacheSchemaVersion, PriceSource = settings.Source, League = settings.League,
+                CacheVersion = CacheSchemaVersion, PriceSource = settings.Source, PreferredPriceSource = settings.PreferredSource, League = settings.League,
                 LastFetchUtc = fetchedAt, ChaosPerDivine = div, ChaosPerExalted = ex,
                 FlatPricesChaos = new(flat, StringComparer.OrdinalIgnoreCase),
                 UniqueListings = new(uniques, StringComparer.OrdinalIgnoreCase),
@@ -1287,8 +1343,32 @@ namespace NinjaPricer
             finally { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
         }
 
+        private static bool IsProviderFailure(Exception ex) =>
+            ex is HttpRequestException or TimeoutException or InvalidDataException or JsonException;
+
         private static async Task<string> GetJsonAsync(string url, CancellationToken token)
-            => await BoundedHttp.GetStringAsync(Http, url, MaxResponseBytes, token).ConfigureAwait(false);
+        {
+            // Two consecutive failures at an endpoint trigger the provider fallback. Each attempt
+            // bounds both headers and body; shutdown/configuration cancellation never triggers fallback.
+            for (int attempt = 0; ; attempt++)
+            {
+                token.ThrowIfCancellationRequested();
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+                deadline.CancelAfter(RequestTimeout);
+                try
+                {
+                    return await BoundedHttp.GetStringAsync(Http, url, MaxResponseBytes, deadline.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+                {
+                    if (attempt >= 1) throw new TimeoutException($"{new Uri(url).Host} request timed out twice after {RequestTimeout.TotalSeconds:0}s each.", ex);
+                }
+                catch (HttpRequestException) when (attempt == 0 && !token.IsCancellationRequested)
+                {
+                    // Retry once; the next failure is handled by the single provider fallback.
+                }
+            }
+        }
 
         private static bool IsValidPrice(double value) => value > 0 && double.IsFinite(value);
         private static bool IsBounded(string? value) => !string.IsNullOrWhiteSpace(value) && value.Length <= MaxStringLength;
@@ -1337,6 +1417,8 @@ namespace NinjaPricer
             lock (Gate)
             {
                 Http.Dispose(); Http = new HttpClient(handler);
+                RequestTimeout = TimeSpan.FromSeconds(10);
+                activeSource = configuredSource; fetchingSource = configuredSource; isFailingOver = false;
                 flatPricesChaos = new(StringComparer.OrdinalIgnoreCase); uniqueListingsByName = new(StringComparer.OrdinalIgnoreCase); pathBasenameToItemName = new(StringComparer.OrdinalIgnoreCase);
                 lastFetchTime = DateTime.MinValue; ResetFailureHealthLocked();
                 LoadedItemCount = 0; chaosPerDivine = 12; chaosPerExalted = .1;

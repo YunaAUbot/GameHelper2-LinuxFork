@@ -1,0 +1,5 @@
+{
+  "status.automatic_fallback": "Automatischer Ersatzanbieter aktiv: {0}",
+  "status.loading_provider": "Lade Preise von {0}...",
+  "status.switching_provider": "Wechsle zu {0}..."
+}

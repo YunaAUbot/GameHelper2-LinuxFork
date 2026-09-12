@@ -358,7 +358,7 @@ public sealed class FetchSafetyTests : IDisposable
             if (path.Contains("/Uniques/", StringComparison.Ordinal))
                 return Response("{\"Pages\":0,\"Items\":[]}");
             if (path.Contains("/Currencies/", StringComparison.Ordinal))
-                return Response("{\"Pages\":1,\"Items\":[]}");
+                return Response("{\"Pages\":1,\"Items\":[{\"Text\":\"known\",\"CurrentPrice\":1}]}");
             return Response(NinjaStash("known", 1));
         });
         PriceFetcher.ResetForTests(handler);
@@ -377,7 +377,7 @@ public sealed class FetchSafetyTests : IDisposable
             if (path.EndsWith("/Leagues", StringComparison.Ordinal))
                 return Response("[{\"Value\":\"Test\",\"ChaosDivinePrice\":25,\"DivinePrice\":50}]");
             if (path.Contains("/Currencies/", StringComparison.Ordinal) || path.Contains("/Uniques/", StringComparison.Ordinal))
-                return Response("{\"Pages\":1,\"Items\":[]}");
+                return Response("{\"Pages\":1,\"Items\":[{\"Text\":\"known\",\"CurrentPrice\":1}]}");
             return Response(NinjaStash("known", 1));
         });
         PriceFetcher.ResetForTests(handler);
@@ -496,6 +496,111 @@ public sealed class FetchSafetyTests : IDisposable
         Assert.Equal(1, PriceFetcher.ConsecutiveFailureCount);
         Assert.Contains("NotSupportedException", PriceFetcher.LastFetchError, StringComparison.Ordinal);
         Assert.True(PriceFetcher.NextRetryUtc > DateTime.UtcNow);
+    }
+
+    [Fact]
+    public async Task FailedScoutSwitchesToNinjaAndPersistsActualAndPreferredSources()
+    {
+        var handler = new StubHandler((request, _) => request.RequestUri!.Host == "poe2scout.com"
+            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            : Response(NinjaExchange("fallback", 4)));
+        PriceFetcher.ResetForTests(handler);
+        PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Test", 5);
+        Assert.True(await PriceFetcher.RunFetchForTests(this.directory));
+        Assert.Equal(2, handler.Requests.Count(u => new Uri(u).Host == "poe2scout.com"));
+        Assert.True(PriceFetcher.IsUsingFallback);
+        Assert.Equal("poe.ninja", PriceFetcher.ActiveSourceName);
+        Assert.True(PriceFetcher.HasPriceDataForName("fallback"));
+        var path = Path.Combine(this.directory, "price_cache.json");
+        var cache = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(path));
+        Assert.Equal(PriceFetcher.SourcePoeNinja, (int)cache["PriceSource"]!);
+        Assert.Equal(PriceFetcher.SourcePoe2Scout, (int)cache["PreferredPriceSource"]!);
+        PriceFetcher.ResetForTests(new StubHandler((_, _) => Response("{}")));
+        PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Test", 5);
+        Assert.True(PriceFetcher.TryLoadCacheForTests(path));
+        Assert.True(PriceFetcher.IsUsingFallback);
+        PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Other League", 5);
+        Assert.False(PriceFetcher.IsUsingFallback);
+        Assert.False(PriceFetcher.HasPriceDataForName("fallback"));
+    }
+
+    [Fact]
+    public async Task SingleTransientFailureRetriesWithoutSwitchingProvider()
+    {
+        int count = 0;
+        var handler = new StubHandler((_, _) => ++count == 1
+            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            : Response(NinjaExchange("recovered", 4)));
+        PriceFetcher.ResetForTests(handler);
+        PriceFetcher.Configure(PriceFetcher.SourcePoeNinja, "Test", 5);
+        Assert.True(await PriceFetcher.RunFetchForTests(this.directory));
+        Assert.False(PriceFetcher.IsUsingFallback);
+        Assert.All(handler.Requests, url => Assert.Equal("poe.ninja", new Uri(url).Host));
+    }
+
+    [Theory]
+    [InlineData(PriceFetcher.SourcePoeNinja)]
+    [InlineData(PriceFetcher.SourcePoe2Scout)]
+    public async Task NinjaOutageKeepsSuccessfulScoutResultWithoutOptionalEnrichment(int preferred)
+    {
+        var handler = new StubHandler((request, _) => request.RequestUri!.Host == "poe.ninja"
+            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            : Response(ScoutFallbackResponse(request.RequestUri)));
+        PriceFetcher.ResetForTests(handler);
+        PriceFetcher.Configure(preferred, "Test", 5);
+        Assert.True(await PriceFetcher.RunFetchForTests(this.directory));
+        Assert.Equal(preferred == PriceFetcher.SourcePoeNinja, PriceFetcher.IsUsingFallback);
+        Assert.Equal("poe2scout", PriceFetcher.ActiveSourceName);
+        Assert.True(PriceFetcher.HasPriceDataForName("scout reward"));
+        Assert.Equal(2, handler.Requests.Count(u => new Uri(u).Host == "poe.ninja"));
+    }
+
+    [Fact]
+    public async Task TimeoutRetriesOnceThenUsesFallback()
+    {
+        var handler = new StubHandler(async (request, token) =>
+        {
+            if (request.RequestUri!.Host == "poe2scout.com")
+                await Task.Delay(Timeout.Infinite, token);
+            return Response(NinjaExchange("timeout fallback", 4));
+        });
+        PriceFetcher.ResetForTests(handler);
+        PriceFetcher.RequestTimeout = TimeSpan.FromMilliseconds(50);
+        PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Test", 5);
+        Assert.True(await PriceFetcher.RunFetchForTests(this.directory).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.Equal(2, handler.Requests.Count(u => new Uri(u).Host == "poe2scout.com"));
+        Assert.True(PriceFetcher.IsUsingFallback);
+        Assert.True(PriceFetcher.HasPriceDataForName("timeout fallback"));
+    }
+
+    [Fact]
+    public async Task BothProvidersFailOnceEachWithoutReplacingGoodCache()
+    {
+        bool fail = false;
+        var handler = new StubHandler((_, _) => fail
+            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            : Response(NinjaExchange("cached", 4)));
+        PriceFetcher.ResetForTests(handler);
+        PriceFetcher.Configure(PriceFetcher.SourcePoeNinja, "Test", 5);
+        Assert.True(await PriceFetcher.RunFetchForTests(this.directory));
+        var path = Path.Combine(this.directory, "price_cache.json");
+        var before = File.ReadAllBytes(path);
+        handler.Requests.Clear();
+        fail = true;
+        Assert.False(await PriceFetcher.RunFetchForTests(this.directory));
+        Assert.Equal(4, handler.Requests.Count);
+        Assert.True(PriceFetcher.HasPriceDataForName("cached"));
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.False(PriceFetcher.IsUsingFallback);
+        Assert.False(PriceFetcher.IsFailingOver);
+        Assert.Equal(1, PriceFetcher.ConsecutiveFailureCount);
+    }
+
+    private static string ScoutFallbackResponse(Uri uri)
+    {
+        if (uri.AbsolutePath.EndsWith("/Leagues")) return "[]";
+        if (uri.AbsolutePath.Contains("/Uniques/")) return "{\"Pages\":1,\"Items\":[]}";
+        return "{\"Pages\":1,\"Items\":[{\"Text\":\"scout reward\",\"CurrentPrice\":4}]}";
     }
 
     private static string QueryValue(string url, string key)

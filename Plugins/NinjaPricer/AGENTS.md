@@ -20,7 +20,7 @@ NinjaPricer is the shared GameHelper2 price provider. It owns bounded public lea
 
 ```bash
 export GAMEHELPER2_HOST_ROOT=/path/to/GameHelper2
-dotnet test NinjaPricer.Tests/NinjaPricer.Tests.csproj -c Release
+dotnet test test/NinjaPricer.Tests.csproj -c Release
 dotnet build NinjaPricer.csproj -c Release -p:EnableWindowsTargeting=true
 git diff --check
 ```
@@ -28,3 +28,12 @@ git diff --check
 ## Safety
 
 No game input, process writes, injection, packet manipulation, or unrelated networking. Keep external calls bounded, public, read-only, and fail-closed. Never commit runtime cache or configuration.
+
+## Git importer layout
+
+Keep the production project and source at repository root. Every auxiliary project
+and tool belongs under `test/` (tools under `test/tools/`). Preserve assembly identity
+and exclude test/tools and nested obj/bin from all production SDK items.
+Run `python3 test/check_import_layout.py` with `GAMEHELPER2_HOST_ROOT` and `DOTNET` set.
+See [ROOT_LAYOUT.md](ROOT_LAYOUT.md) for the pinned importer contract and verification
+commands that use existing host artifacts without rebuilding or modifying the host.

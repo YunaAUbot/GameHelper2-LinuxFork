@@ -485,12 +485,9 @@ namespace Radar
                 ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 0f);
                 ImGui.Begin("###minimapRadar", ImGuiHelper.TransparentWindowFlags);
                 ImGui.PopStyleVar();
-                this.DrawLargeMap(miniMapCenter, trackingPos, trackingHeight, true);
-                this.DrawTgtFiles(miniMapCenter, trackingPos, trackingHeight, true);
-                this.DrawDirectionLines(miniMapCenter, trackingPos, trackingHeight, true);
                 this.DrawTgtIcons(miniMapCenter, trackingPos, trackingHeight, miniMap.Zoom);
                 this.DrawMapIcons(miniMapCenter, trackingPos, trackingHeight, miniMap.Zoom);
-                this.DrawEntityPaths(miniMapCenter, trackingPos, trackingHeight, true);
+                this.DrawEntityPaths(miniMapCenter, trackingPos, trackingHeight);
                 ImGui.End();
             }
         }
@@ -588,11 +585,7 @@ namespace Radar
             }
         }
 
-        private void DrawLargeMap(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawLargeMap(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             if (!this.Settings.DrawWalkableMap)
             {
@@ -623,7 +616,7 @@ namespace Radar
             p3 += mapCenter;
             p4 += mapCenter;
 
-            if (forceWindowDrawList || this.Settings.DrawMapInCull)
+            if (this.Settings.DrawMapInCull)
             {
                 ImGui.GetWindowDrawList().AddImageQuad(this.walkableMapTexture, p1, p2, p3, p4);
             }
@@ -633,11 +626,7 @@ namespace Radar
             }
         }
 
-        private void DrawTgtFiles(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawTgtFiles(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             var col = ImGuiHelper.Color(
                 (uint)(this.Settings.POIColor.X * 255),
@@ -646,7 +635,7 @@ namespace Radar
                 (uint)(this.Settings.POIColor.W * 255));
 
             ImDrawListPtr fgDraw;
-            if (forceWindowDrawList || this.Settings.DrawPOIInCull)
+            if (this.Settings.DrawPOIInCull)
             {
                 fgDraw = ImGui.GetWindowDrawList();
             }
@@ -751,11 +740,7 @@ namespace Radar
             }
         }
 
-        private void DrawDirectionLines(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawDirectionLines(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             var showStraight = this.Settings.ShowStraightLine;
             var showSmooth = this.Settings.ShowSmoothPath;
@@ -785,7 +770,7 @@ namespace Radar
             var doorOverrides = LineWalker.BuildDoorOverrideMap(currentAreaInstance);
 
             ImDrawListPtr fgDraw;
-            if (forceWindowDrawList || this.Settings.DrawPOIInCull)
+            if (this.Settings.DrawPOIInCull)
             {
                 fgDraw = ImGui.GetWindowDrawList();
             }
@@ -1969,11 +1954,7 @@ namespace Radar
         /// <summary>
         /// Draws cached entity paths. Must be called after CollectEntityPaths.
         /// </summary>
-        private void DrawEntityPaths(
-            Vector2 mapCenter,
-            Vector2 trackingPos,
-            float trackingHeight,
-            bool forceWindowDrawList = false)
+        private void DrawEntityPaths(Vector2 mapCenter, Vector2 trackingPos, float trackingHeight)
         {
             if (!this.Settings.ShowEntityPaths ||
                 (this.entityPathSnapshot.Count == 0 && this.tileIconPathSnapshot.Count == 0))
@@ -1985,7 +1966,7 @@ namespace Radar
             var gridHeightData = currentAreaInstance.GridHeightData;
 
             ImDrawListPtr fgDraw;
-            if (forceWindowDrawList || this.Settings.DrawPOIInCull)
+            if (this.Settings.DrawPOIInCull)
             {
                 fgDraw = ImGui.GetWindowDrawList();
             }
