@@ -17,12 +17,16 @@ concurrency:
 jobs:
   merge-upstream:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out fork main
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: main
           fetch-depth: 0
+
+      - name: Test sync safety with local repositories
+        run: bash tests/test_daily_upstream_sync.sh
 
       - name: Merge upstream when conflict-free
         shell: bash

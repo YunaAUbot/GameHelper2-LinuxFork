@@ -501,13 +501,13 @@ public sealed class FetchSafetyTests : IDisposable
     [Fact]
     public async Task FailedScoutSwitchesToNinjaAndPersistsActualAndPreferredSources()
     {
-        var handler = new StubHandler((request, _) => request.RequestUri!.Host == "poe2scout.com"
+        var handler = new StubHandler((request, _) => request.RequestUri!.Host == "api.poe2scout.com"
             ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
             : Response(NinjaExchange("fallback", 4)));
         PriceFetcher.ResetForTests(handler);
         PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Test", 5);
         Assert.True(await PriceFetcher.RunFetchForTests(this.directory));
-        Assert.Equal(2, handler.Requests.Count(u => new Uri(u).Host == "poe2scout.com"));
+        Assert.Equal(2, handler.Requests.Count(u => new Uri(u).Host == "api.poe2scout.com"));
         Assert.True(PriceFetcher.IsUsingFallback);
         Assert.Equal("poe.ninja", PriceFetcher.ActiveSourceName);
         Assert.True(PriceFetcher.HasPriceDataForName("fallback"));
@@ -522,6 +522,22 @@ public sealed class FetchSafetyTests : IDisposable
         PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Other League", 5);
         Assert.False(PriceFetcher.IsUsingFallback);
         Assert.False(PriceFetcher.HasPriceDataForName("fallback"));
+    }
+
+    [Fact]
+    public async Task ScoutHtmlResponseFallsBackUsingDedicatedApiHost()
+    {
+        var handler = new StubHandler((request, _) => request.RequestUri!.Host == "poe.ninja"
+            ? Response(NinjaExchange("html fallback", 4))
+            : Response("<!doctype html><html>maintenance</html>"));
+        PriceFetcher.ResetForTests(handler);
+        PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Test", 5);
+        Assert.True(await PriceFetcher.RunFetchForTests(this.directory));
+        Assert.True(PriceFetcher.IsUsingFallback);
+        Assert.True(PriceFetcher.HasPriceDataForName("html fallback"));
+        var scoutRequests = handler.Requests.Where(u => new Uri(u).Host != "poe.ninja").ToArray();
+        Assert.NotEmpty(scoutRequests);
+        Assert.All(scoutRequests, url => Assert.StartsWith("https://api.poe2scout.com/poe2/", url));
     }
 
     [Fact]
@@ -560,7 +576,7 @@ public sealed class FetchSafetyTests : IDisposable
     {
         var handler = new StubHandler(async (request, token) =>
         {
-            if (request.RequestUri!.Host == "poe2scout.com")
+            if (request.RequestUri!.Host == "api.poe2scout.com")
                 await Task.Delay(Timeout.Infinite, token);
             return Response(NinjaExchange("timeout fallback", 4));
         });
@@ -568,7 +584,7 @@ public sealed class FetchSafetyTests : IDisposable
         PriceFetcher.RequestTimeout = TimeSpan.FromMilliseconds(50);
         PriceFetcher.Configure(PriceFetcher.SourcePoe2Scout, "Test", 5);
         Assert.True(await PriceFetcher.RunFetchForTests(this.directory).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
-        Assert.Equal(2, handler.Requests.Count(u => new Uri(u).Host == "poe2scout.com"));
+        Assert.Equal(2, handler.Requests.Count(u => new Uri(u).Host == "api.poe2scout.com"));
         Assert.True(PriceFetcher.IsUsingFallback);
         Assert.True(PriceFetcher.HasPriceDataForName("timeout fallback"));
     }

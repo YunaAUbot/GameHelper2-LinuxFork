@@ -75,7 +75,6 @@ git clone -q "$origin_bare" "$runner"
   UPSTREAM_BRANCH=main \
   TARGET_BRANCH=main \
   SYNC_BASE_BRANCH=upstream-sync-base \
-  HOME="$sandbox/empty-home" \
     "$sync_script"
 )
 initial_upstream=$(git --git-dir="$upstream_bare" rev-parse refs/heads/main)
@@ -95,7 +94,6 @@ git -C "$runner" reset -q --hard origin/main
   UPSTREAM_BRANCH=main \
   TARGET_BRANCH=main \
   SYNC_BASE_BRANCH=upstream-sync-base \
-  HOME="$sandbox/empty-home" \
     "$sync_script"
 )
 
@@ -106,8 +104,8 @@ base_head=$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base
 git --git-dir="$origin_bare" show refs/heads/main:upstream.txt | grep -qx 'upstream change'
 git --git-dir="$origin_bare" show refs/heads/main:.github/workflows/local.txt | grep -qx 'fork workflow'
 
-# The bundled LootValue tree is upstream-owned. A local conflict there must
-# resolve to the exact upstream content instead of blocking every later sync.
+# LootValue has fork-specific pricing integration. A conflict must preserve
+# both remote refs until explicitly reviewed, never overwrite the plugin tree.
 git -C "$upstream_work" pull -q --ff-only
 printf 'upstream-owned update\n' > "$upstream_work/Plugins/LootValue/owned.txt"
 git -C "$upstream_work" add Plugins/LootValue/owned.txt
@@ -120,16 +118,21 @@ printf 'fork-local conflicting update\n' > "$runner/Plugins/LootValue/owned.txt"
 git -C "$runner" add Plugins/LootValue/owned.txt
 git -C "$runner" -c user.name=test -c user.email=test@example.invalid commit -qm 'conflict in upstream-owned plugin'
 git -C "$runner" push -q origin HEAD:main
-(
-  cd "$runner"
-  UPSTREAM_URL="$upstream_bare" \
-  UPSTREAM_BRANCH=main \
-  TARGET_BRANCH=main \
-  SYNC_BASE_BRANCH=upstream-sync-base \
-  HOME="$sandbox/empty-home" \
-    "$sync_script"
-)
-git --git-dir="$origin_bare" show refs/heads/main:Plugins/LootValue/owned.txt | grep -qx 'upstream-owned update'
+before=$(git --git-dir="$origin_bare" rev-parse refs/heads/main)
+base_before=$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base)
+if (cd "$runner"; UPSTREAM_URL="$upstream_bare" "$sync_script"); then
+  echo 'FAIL: LootValue conflict was overwritten' >&2
+  exit 1
+fi
+[[ "$before" == "$(git --git-dir="$origin_bare" rev-parse refs/heads/main)" ]]
+[[ "$base_before" == "$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base)" ]]
+# Simulate reviewed integration, keeping the fork's intentional implementation.
+git -C "$runner" checkout --ours Plugins/LootValue/owned.txt
+git -C "$runner" add Plugins/LootValue/owned.txt
+git -C "$runner" commit -qm 'reviewed plugin adaptation'
+git -C "$runner" push -q origin HEAD:main
+(cd "$runner"; UPSTREAM_URL="$upstream_bare" "$sync_script")
+git --git-dir="$origin_bare" show refs/heads/main:Plugins/LootValue/owned.txt | grep -qx 'fork-local conflicting update'
 
 # A conflicting upstream/fork edit must fail without changing origin/main.
 git -C "$upstream_work" pull -q --ff-only
@@ -151,7 +154,6 @@ if (
   UPSTREAM_BRANCH=main \
   TARGET_BRANCH=main \
   SYNC_BASE_BRANCH=upstream-sync-base \
-  HOME="$sandbox/empty-home" \
     "$sync_script"
 ); then
   echo 'FAIL: conflicting sync unexpectedly succeeded' >&2
@@ -169,6 +171,8 @@ printf 'base\n' > "$upstream_work/shared.txt"
 printf 'upstream change\n' > "$upstream_work/upstream.txt"
 mkdir -p "$upstream_work/scripts"
 printf 'feature fixture\n' > "$upstream_work/scripts/git-plugin-worker.py"
+mkdir -p "$upstream_work/Plugins/LootValue"
+printf 'upstream-owned update\n' > "$upstream_work/Plugins/LootValue/owned.txt"
 printf 'rewritten history\n' > "$upstream_work/rewrite.txt"
 git -C "$upstream_work" add .
 git -C "$upstream_work" commit -qm 'rewritten upstream'
@@ -179,7 +183,6 @@ git -C "$upstream_work" push -q --force origin HEAD:main
   UPSTREAM_BRANCH=main \
   TARGET_BRANCH=main \
   SYNC_BASE_BRANCH=upstream-sync-base \
-  HOME="$sandbox/empty-home" \
     "$sync_script"
 )
 git --git-dir="$origin_bare" show refs/heads/main:rewrite.txt | grep -qx 'rewritten history'
@@ -204,5 +207,32 @@ fi
 [[ "$before" == "$(git --git-dir="$origin_bare" rev-parse refs/heads/main)" ]]
 [[ "$base_before" == "$(git --git-dir="$origin_bare" rev-parse refs/heads/upstream-sync-base)" ]]
 git --git-dir="$origin_bare" show refs/heads/main:scripts/git-plugin-worker.py | grep -qx 'feature fixture'
+
+# A copied-out price fetcher must not attract upstream edits through rename
+# similarity. Expect the real modify/delete conflict at the original path.
+rename_repo="$sandbox/rename-fixture"
+git init -q -b main "$rename_repo"
+git -C "$rename_repo" config user.name test
+git -C "$rename_repo" config user.email test@example.invalid
+mkdir -p "$rename_repo/Plugins/LootValue"
+seq 1 100 > "$rename_repo/Plugins/LootValue/PoeNinjaPriceFetcher.cs"
+git -C "$rename_repo" add .
+git -C "$rename_repo" commit -qm base
+git -C "$rename_repo" branch upstream
+mkdir -p "$rename_repo/Plugins/NinjaPricer"
+git -C "$rename_repo" mv Plugins/LootValue/PoeNinjaPriceFetcher.cs Plugins/NinjaPricer/PriceFetcher.cs
+echo 'fork price provider' >> "$rename_repo/Plugins/NinjaPricer/PriceFetcher.cs"
+git -C "$rename_repo" commit -qam 'extract shared provider'
+git -C "$rename_repo" checkout -q upstream
+echo 'upstream request fix' >> "$rename_repo/Plugins/LootValue/PoeNinjaPriceFetcher.cs"
+git -C "$rename_repo" commit -qam 'fix embedded fetcher'
+git -C "$rename_repo" checkout -q main
+if git -C "$rename_repo" -c merge.renames=false merge --no-commit upstream; then
+  echo 'FAIL: extracted provider unexpectedly absorbed embedded fetcher change' >&2
+  exit 1
+fi
+[[ "$(git -C "$rename_repo" diff --name-only --diff-filter=U)" == Plugins/LootValue/PoeNinjaPriceFetcher.cs ]]
+git -C "$rename_repo" diff --exit-code HEAD -- Plugins/NinjaPricer/PriceFetcher.cs
+require 'merge.renames=false' "$sync_script" 'cross-plugin rename inference must be disabled'
 
 printf 'PASS: daily upstream sync workflow is scheduled, bounded, and fail-closed\n'

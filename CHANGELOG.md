@@ -21,13 +21,42 @@ from your own plugins via `Core.*`.
   weights and installed LootValue Ritual fix. The upstream embedded
   LootValue fetcher is intentionally not reintroduced.
 
-## [2.7.2] - 2026-09-05
+## [2.7.5] - 2026-09-11
+
+### Fixed
+
+- **Controller-mode map detection.** Updated the controller map-parent offset
+  after the game layout changed, restoring map access when using a controller.
+- **LootValue poe2scout requests.** Switched price requests to poe2scout's
+  current API host and reject non-JSON responses so provider failures are
+  detected cleanly instead of being treated as valid price data.
+
+## [2.7.4] - 2026-09-07
+
+### Fixed
+
+- **LootValue price-provider failover.** Slow poe2scout and poe.ninja requests
+  now time out without surfacing `TaskCanceledException` first-chance breaks.
+  After two consecutive request failures, LootValue automatically switches to
+  the other provider, preserves its saved preference, and reports the active
+  fallback in settings. Provider requests use a short 10-second deadline so an
+  outage cannot leave the plugin showing `Loading...` for roughly 90 seconds.
+- **Gemcutting panel detection.** Skill and Support Gemcutting screens now count
+  as large blocking panels using their conditionally visible `[53][3]` and
+  `[54][3]` UI elements.
+- **Radar minimap layer parity.** The minimap now draws the walkable-map
+  outlines, terrain POIs, and POI paths already shown on the large map, with
+  every layer clipped to the minimap bounds.
+
+## [2.7.3] - 2026-09-05
 
 ### Changed
 
 - **Forbidden Rites economy defaults.** LootValue, LootTracker, and
   RunecraftHelper now default to the current league and migrate saved untouched
   Runes of Aldur defaults once, while preserving later explicit selections.
+
+## [2.7.2] - 2026-09-05
 
 ### Fixed
 

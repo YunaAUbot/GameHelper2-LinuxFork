@@ -866,7 +866,7 @@ namespace NinjaPricer
 
         private static async Task<RatePair> UpdateScoutRatesAsync(FetchSettings settings, string leagueEscaped, double divChaos, double exChaos, CancellationToken token)
         {
-                var json = await GetJsonAsync("https://poe2scout.com/api/poe2/Leagues", token).ConfigureAwait(false);
+                var json = await GetJsonAsync("https://api.poe2scout.com/poe2/Leagues", token).ConfigureAwait(false);
                 var leagues = ScoutLeaguePayload.ParseLeagueArray(json, 100);
 
                 foreach (var league in leagues)
@@ -882,7 +882,7 @@ namespace NinjaPricer
                         exChaos = chaosDiv / divEx;
                     break;
                 }
-                var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Currencies/ByCategory?Category=currency&ReferenceCurrency=chaos&PerPage=250&Page=1";
+                var url = $"https://api.poe2scout.com/poe2/Leagues/{leagueEscaped}/Currencies/ByCategory?Category=currency&ReferenceCurrency=chaos&PerPage=250&Page=1";
                 json = await GetJsonAsync(url, token).ConfigureAwait(false);
                 var items = ScoutLeaguePayload.RequireObjectArray(
                     JObject.Parse(json)["Items"],
@@ -917,7 +917,7 @@ namespace NinjaPricer
             while (page <= pages)
             {
                 token.ThrowIfCancellationRequested();
-                    var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Currencies/ByCategory?Category={category}&ReferenceCurrency=chaos&PerPage=250&Page={page}";
+                    var url = $"https://api.poe2scout.com/poe2/Leagues/{leagueEscaped}/Currencies/ByCategory?Category={category}&ReferenceCurrency=chaos&PerPage=250&Page={page}";
                     var json = await GetJsonAsync(url, token).ConfigureAwait(false);
                     var data = JObject.Parse(json);
                     pages = data["Pages"]?.Value<int?>() ?? 1;
@@ -960,7 +960,7 @@ namespace NinjaPricer
             while (page <= pages)
             {
                 token.ThrowIfCancellationRequested();
-                    var url = $"https://poe2scout.com/api/poe2/Leagues/{leagueEscaped}/Uniques/ByCategory?Category={category}&ReferenceCurrency=chaos&PerPage=250&Page={page}";
+                    var url = $"https://api.poe2scout.com/poe2/Leagues/{leagueEscaped}/Uniques/ByCategory?Category={category}&ReferenceCurrency=chaos&PerPage=250&Page={page}";
                     var json = await GetJsonAsync(url, token).ConfigureAwait(false);
                     var data = JObject.Parse(json);
                     pages = data["Pages"]?.Value<int?>() ?? 1;
