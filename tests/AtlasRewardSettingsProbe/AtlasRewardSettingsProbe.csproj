@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><RuntimeIdentifier>linux-x64</RuntimeIdentifier><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Plugins/Atlas2/Atlas2Settings.cs" Link="Atlas2Settings.cs" />
+    <Compile Include="../../GameHelper/Plugin/IPSettings.cs" Link="IPSettings.cs" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+</Project>

@@ -6,6 +6,32 @@ Path of Exile 2; "0.5.x" references are the game patch the build targets.
 Sections marked **For plugin devs** describe newly exposed APIs you can read
 from your own plugins via `Core.*`.
 
+## [2.8.0] - 2026-09-15
+
+### Added
+
+- **PlayerBuffBar totem counters.** Buff bars can now show the player's living
+  deployed totems, grouped by totem type with optional automatically downloaded
+  wiki icons.
+- **For plugin devs: deployed-entity records.** `Actor` now exposes deployed
+  entity records, including ownership and source-skill identifiers.
+
+### Changed
+
+- **Atlas2 Head of the King planner.** Start maps now come from the game's live,
+  dynamically generated selectable set for both the introductory quest and
+  repeat Rites. Reward routes are ranked with editable Forbidden Rites economy
+  defaults, while non-item utility rewards remain neutral.
+
+### Fixed
+
+- **Atlas2 Rite of the Nameless prediction.** Removed a stale special-map field
+  check that excluded valid maps, accepted selectable-start sets larger than 64
+  nodes, and corrected the Greater Exalted Orb reward quantity.
+- **Trial of the Sekhemas terrain.** Raised the guarded terrain-size ceiling for
+  legitimate large Trial layouts while retaining the exact tile-vector shape
+  validation used to reject invalid memory data.
+
 ## Linux fork — 2026-09-10
 
 ### Fixed
