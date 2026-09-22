@@ -17,28 +17,11 @@ if "$BUILDER" "$ROOT" >/dev/null 2>&1; then
   fail "builder accepts the repository root as output"
 fi
 
-for project in \
-  'GameHelper\\GameHelper.csproj' \
-  'GameOffsets\\GameOffsets.csproj' \
-  'renderer-src\\ClickableTransparentOverlay\\ClickableTransparentOverlay\\ClickableTransparentOverlay.csproj' \
-  'Plugins\\PreloadAlert\\PreloadAlert.csproj' \
-  'Plugins\\Radar\\Radar.csproj' \
-  'Plugins\\HealthBars\\HealthBars.csproj' \
-  'Plugins\\Atlas2\\Atlas2.csproj' \
-  'Plugins\\PlayerBuffBar\\PlayerBuffBar.csproj' \
-  'Plugins\\LootValue\\LootValue.csproj' \
-  'Plugins\\NinjaPricer\\NinjaPricer.csproj'; do
-  grep -Fq "$project" "$SOLUTION" || fail "Linux solution omits passive project: $project"
-done
-
-for forbidden in AutoHotKeyTrigger PickupHelper Launcher; do
-  ! grep -q "$forbidden" "$SOLUTION" || fail "Linux solution includes excluded project: $forbidden"
-done
-
-grep -q 'GameOverlay.Linux.sln' "$BUILDER" || fail "builder does not build the Linux solution"
+python3 "$ROOT/tests/test_linux_plugin_discovery.py"
+grep -q 'discover-linux-plugins.py' "$BUILDER" || fail "builder does not discover plugin projects"
 grep -q 'EnableWindowsTargeting=true' "$BUILDER" || fail "Linux build does not enable Windows targeting"
-grep -Eq '^passive_plugins=.*LootValue.*NinjaPricer' "$BUILDER" || fail "builder does not package LootValue with NinjaPricer"
-! grep -Eq '^for forbidden.*LootValue' "$BUILDER" || fail "builder still rejects bundled LootValue"
+! grep -Eq '^for forbidden.*(AutoHotKeyTrigger|PickupHelper)' "$BUILDER" || fail "builder still rejects discovered plugins"
+
 grep -q 'price_cache.json' "$BUILDER" || fail "builder does not remove and reject NinjaPricer runtime cache"
 grep -q 'price_cache.json.tmp-' "$BUILDER" || fail "builder does not remove and reject NinjaPricer temporary cache files"
 grep -Fq 'dotnet=${DOTNET:-dotnet}' "$BUILDER" || fail "builder does not use the caller's portable dotnet command"
@@ -50,4 +33,4 @@ grep -q 'pkg-config.*x11.*xext.*xrender.*gl' "$BUILDER" || fail "native GPU help
 grep -q 'gamehelper2-gpu-overlay' "$BUILDER" || fail "native GPU helper is not staged"
 grep -q 'README-LINUX.md' "$BUILDER" || fail "builder does not stage Linux operating documentation"
 
-printf 'PASS: Linux package builder is self-contained and packages only approved plugins\n'
+printf 'PASS: Linux package builder is self-contained and packages discovered plugins\n'

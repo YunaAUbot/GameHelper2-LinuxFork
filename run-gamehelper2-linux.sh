@@ -182,7 +182,7 @@ PROTON_USE_WINED3D="${PROTON_USE_WINED3D:-1}"
 
 # Activation is local and precedes assembly discovery. Network/build work runs separately.
 if command -v python3 >/dev/null && [[ -f "$SCRIPT_DIR/scripts/git-plugin-worker.py" ]]; then
-  timeout 20s python3 "$SCRIPT_DIR/scripts/git-plugin-worker.py" activate "$(dirname -- "$GAMEHELPER2_EXE")" || {
+  timeout 120s python3 "$SCRIPT_DIR/scripts/git-plugin-worker.py" activate "$(dirname -- "$GAMEHELPER2_EXE")" || {
     echo "Plugin activation failed; refusing launch until installation recovery completes." >&2
     exit 10
   }

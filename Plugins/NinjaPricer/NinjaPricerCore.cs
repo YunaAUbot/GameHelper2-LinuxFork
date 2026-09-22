@@ -15,7 +15,6 @@ public sealed class NinjaPricerCore : PCore<NinjaPricerSettings>
     private ProviderRegistration? registration;
     private NinjaPriceProvider? adapter;
     private string registrationStatus = "Disabled";
-    private int selectedLeagueIndex = -1;
 
     private string SettingPathname => Path.Join(this.DllDirectory, "config", "settings.txt");
 
@@ -162,41 +161,29 @@ public sealed class NinjaPricerCore : PCore<NinjaPricerSettings>
     private void DrawLeagueSelector()
     {
         var leagues = LeagueProvider.Leagues;
-        if (leagues.Count == 0)
-        {
-            ImGui.InputText("League", ref this.Settings.League, 64);
-            return;
-        }
-
-        if (this.selectedLeagueIndex < 0 || this.selectedLeagueIndex >= leagues.Count ||
-            !string.Equals(leagues[this.selectedLeagueIndex], this.Settings.League, StringComparison.OrdinalIgnoreCase))
-        {
-            this.selectedLeagueIndex = 0;
-            for (var i = 0; i < leagues.Count; i++)
-            {
-                if (string.Equals(leagues[i], this.Settings.League, StringComparison.OrdinalIgnoreCase))
-                {
-                    this.selectedLeagueIndex = i;
-                    break;
-                }
-            }
-        }
-
         ImGui.SetNextItemWidth(260f);
-        if (!ImGui.BeginCombo("League", leagues[this.selectedLeagueIndex]))
+        // Preview the actual setting even if a refresh no longer lists that league.
+        if (ImGui.BeginCombo("League", this.Settings.League))
         {
-            return;
-        }
-
-        for (var i = 0; i < leagues.Count; i++)
-        {
-            if (ImGui.Selectable(leagues[i], i == this.selectedLeagueIndex))
+            foreach (var league in leagues)
             {
-                this.selectedLeagueIndex = i;
-                this.Settings.League = leagues[i];
+                var selected = string.Equals(league, this.Settings.League, StringComparison.Ordinal);
+                if (ImGui.Selectable(league, selected))
+                {
+                    this.Settings.League = league;
+                    this.SaveSettings();
+                }
+                if (selected) ImGui.SetItemDefaultFocus();
             }
+            if (leagues.Count == 0) ImGui.TextDisabled("League list unavailable or still loading.");
+            ImGui.EndCombo();
         }
-
-        ImGui.EndCombo();
+        ImGui.SameLine();
+        if (ImGui.Button("Reload leagues")) LeagueProvider.ForceReload();
+        if (leagues.Count == 0 || !leagues.Contains(this.Settings.League, StringComparer.Ordinal))
+        {
+            ImGui.TextWrapped("Current league is not in the loaded list. It is kept unchanged; reload or select a league.");
+            ImGui.InputText("Custom league", ref this.Settings.League, 128);
+        }
     }
 }

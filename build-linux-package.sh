@@ -8,7 +8,6 @@ configuration=Release
 framework=net10.0-windows
 runtime=win-x64
 build_output="$repo_root/GameHelper/bin/$configuration/$framework/$runtime"
-passive_plugins=(PreloadAlert Radar HealthBars Atlas2 PlayerBuffBar LootValue NinjaPricer)
 
 [[ $# -le 1 ]] || { printf 'usage: %s [output-directory]\n' "$0" >&2; exit 2; }
 [[ "$output" = /* ]] || output="$PWD/$output"
@@ -36,7 +35,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$dotnet" build "$repo_root/GameOverlay.Linux.sln" \
+python3 "$repo_root/scripts/discover-linux-plugins.py" "$repo_root" \
+  "$stage/GameOverlay.Linux.slnx" "$stage/plugins.txt"
+mapfile -t plugins < "$stage/plugins.txt"
+printf 'Building discovered plugins: %s\n' "${plugins[*]}"
+
+"$dotnet" build "$stage/GameOverlay.Linux.slnx" \
   -c "$configuration" -p:GenerateDocumentationFile=false \
   -p:EnableWindowsTargeting=true \
   -p:SkipNativeGpuOverlayBuild=true
@@ -58,7 +62,7 @@ cp "$repo_root/scripts/plugin-assembly-check/PluginAssemblyCheck.csproj" "$repo_
 cp "$repo_root/run-gamehelper2-linux.sh" "$publish/"
 cp "$repo_root/scripts/steam-proton-env.sh" "$repo_root/scripts/git-plugin-worker.py" "$publish/scripts/"
 cp "$repo_root/README-LINUX.md" "$publish/README-LINUX.md"
-for plugin in "${passive_plugins[@]}"; do
+for plugin in "${plugins[@]}"; do
   source_dir="$build_output/Plugins/$plugin"
   [[ -f "$source_dir/$plugin.dll" ]] || {
     printf 'missing built plugin: %s\n' "$source_dir/$plugin.dll" >&2
@@ -96,7 +100,7 @@ fi
 
 # Reject runtime state or excluded plugin content even if an upstream build
 # target starts producing it in the future.
-for forbidden in configs logs credentials AutoHotKeyTrigger PickupHelper; do
+for forbidden in configs logs credentials; do
   if find "$publish" \( -type d -o -type f \) -iname "$forbidden" -print -quit | grep -q .; then
     printf 'refusing to package forbidden path: %s\n' "$forbidden" >&2
     exit 1

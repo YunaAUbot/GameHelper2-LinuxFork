@@ -102,7 +102,7 @@ namespace NinjaPricer
             var fetched = new List<string>();
             try
             {
-                var json = await BoundedHttp.GetStringAsync(Http, "https://poe2scout.com/api/poe2/Leagues", MaxResponseBytes, token).ConfigureAwait(false);
+                var json = await BoundedHttp.GetStringAsync(Http, "https://api.poe2scout.com/poe2/Leagues", MaxResponseBytes, token).ConfigureAwait(false);
                 var arr = ScoutLeaguePayload.ParseLeagueArray(json, MaxLeagues);
                 if (arr.Count > 0)
                 {

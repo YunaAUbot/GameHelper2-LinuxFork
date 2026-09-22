@@ -195,7 +195,8 @@ namespace GameHelper.Plugin
                 }
 
                 var alc = new PluginAssemblyLoadContext(dllFile.FullName);
-                var assembly = alc.LoadFromAssemblyPath(dllFile.FullName);
+                var assembly = alc.LoadPluginAssembly(dllFile.FullName);
+                Console.WriteLine($"[PManager] Loaded {pluginDirectory.Name} from {dllFile.FullName}; MVID={assembly.ManifestModule.ModuleVersionId}");
                 return (assembly, alc);
             }
             catch (Exception e)

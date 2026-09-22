@@ -29,17 +29,12 @@ Requirements: .NET 10 SDK, a C compiler, `pkg-config`, and development files for
 
 The default artifact is `dist/GameHelper2-linux/`. It is self-contained for Windows x64 and includes the native Linux helper.
 
-The Linux package intentionally contains only passive bundled plugins:
+The Linux package automatically discovers `.csproj` files below `Plugins/` and builds them together with the host in a temporary solution. Test projects, `SamplePluginTemplate`, build-output directories and symlink directories are excluded. New plugin projects need no package-list edit. The checked-in `GameOverlay.Linux.sln` is a legacy fixed subset and does not control packaging anymore.
 
-- Atlas2
-- HealthBars
-- PlayerBuffBar
-- PreloadAlert
-- Radar
-- LootValue
-- NinjaPricer
+All discovered plugins must compile and produce their DLL/assets via their `CopyFiles` target; a failure aborts packaging. This includes AutoHotKeyTrigger, PickupHelper, RitualWispAlert and WorldDrawing. Packaging does not establish Linux compatibility or change enabled-plugin settings in an existing installation. The Windows launcher is excluded; the shell launcher starts `GameHelper.exe` directly.
 
-AutoHotKeyTrigger and PickupHelper remain excluded because they synthesize input. The Windows updater/launcher is also excluded; the shell launcher starts `GameHelper.exe` directly. LootValue is passive and consumes the shared `PriceProviderRegistry`; bundled NinjaPricer owns its bounded public price/league HTTP GETs, cache, and refresh lifecycle.
+Build into a separate output directory when maintaining an existing installation: the package builder replaces its output directory, rather than merging user settings or separately installed plugins.
+
 
 ## Start
 
@@ -174,3 +169,5 @@ The folder, status, staging and reload fixtures use temporary local repositories
 real Git/.NET builds. They do not touch the gaming PC. The existing host migration helper
 now targets host files only; legacy source lists and authentication files are preserved
 byte-for-byte and never applied as plugin registration.
+
+Select the price league in the NinjaPricer plugin settings. AngeArbitrage follows that selection through the shared price provider; it no longer has a separate league input.

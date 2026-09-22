@@ -22,3 +22,5 @@ Production source and the plugin project live at repository root; tests and any
 auxiliary tools belong under `test/`. See [ROOT_LAYOUT.md](ROOT_LAYOUT.md) for the
 verified Git importer contract, test commands, and builds against an already-built
 GameHelper2 host without modifying it.
+
+League selection is owned by NinjaPricer. Its League dropdown shows the actual configured selection even when the public list is unavailable or omits that league. Reload leagues retries discovery; custom selection remains possible for unlisted leagues. AngeArbitrage reads this selection through the shared provider status and clears captured trade observations on a league change.
